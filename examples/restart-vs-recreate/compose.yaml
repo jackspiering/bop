@@ -1,0 +1,16 @@
+# Sticky modes live in the container's writable layer.
+#   docker compose exec bop bop unhealthy sticky=true
+#   docker compose restart bop        # still unhealthy: same writable layer
+#   docker compose up -d --force-recreate bop   # healthy again: new layer
+# Sticky cannot work with read_only: true (bop reports the write failure).
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/bop", "healthcheck"]
+      interval: 2s
+      timeout: 2s
+      start_period: 0s
+      retries: 2

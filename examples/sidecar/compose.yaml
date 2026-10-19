@@ -1,0 +1,21 @@
+# A sidecar shares the parent's network namespace. Its healthcheck probes the
+# parent's /info on 127.0.0.1, which only works while the namespace is shared.
+# After `docker restart` of the parent, the sidecar keeps the old namespace,
+# goes unhealthy, and logs that the target is unreachable.
+services:
+  parent:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    ports:
+      - "8080:8080"
+  sidecar:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    command: ["sidecar", "--target=http://127.0.0.1:8080"]
+    network_mode: service:parent
+    depends_on:
+      parent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bop", "healthcheck", "--url=http://127.0.0.1:8080/info"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
