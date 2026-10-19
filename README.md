@@ -173,6 +173,16 @@ cosign verify ghcr.io/jackspiering/bop:edge \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+That accepts a signature from any workflow in this repository. To accept only
+the publish workflow, running on `main` or on a release tag, use the stricter
+form (CI runs it against every image it publishes):
+
+```sh
+cosign verify ghcr.io/jackspiering/bop:0.1.0 \
+  --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ## Releases
 
 | Tag | Meaning |

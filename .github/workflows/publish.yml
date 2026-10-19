@@ -95,6 +95,15 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
+      # Run the README's strict verify command on every publish, so a change
+      # to the workflow name or triggers cannot silently break it.
+      - name: Verify the signature
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign verify "${IMAGE}@${DIGEST}" \
+            --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
   release:
     name: GitHub Release
