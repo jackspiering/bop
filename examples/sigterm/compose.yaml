@@ -1,0 +1,9 @@
+# BOP_ON_SIGTERM: ignore never reacts to SIGTERM, so `docker compose stop`
+# waits stop_grace_period and then SIGKILLs it (exit 137).
+# Other values: exit:<code> (e.g. exit:7), delay:<dur> (exit 0 after the delay).
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_ON_SIGTERM: "ignore"
+    stop_grace_period: 5s

@@ -1,0 +1,8 @@
+# A well-behaved bop. Switch it at runtime:
+#   docker compose exec bop bop unhealthy
+#   docker compose exec bop bop healthy
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    ports:
+      - "8080:8080"

@@ -1,0 +1,8 @@
+# Exits with code 3 ten seconds after start and stays down (restart: "no").
+# Try restart: on-failure to watch Compose bring it back.
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_MODE: "crash exit=3 after=10s"
+    restart: "no"

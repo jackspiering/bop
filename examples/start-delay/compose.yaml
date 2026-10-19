@@ -1,0 +1,17 @@
+# BOP_START_DELAY: the data listener binds after 20s, so the container is
+# "starting" first. The control listener is available straight away:
+#   docker compose exec bop bop status
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_START_DELAY: "20s"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/bop", "healthcheck"]
+      interval: 5s
+      timeout: 2s
+      start_period: 40s
+      start_interval: 1s
+      retries: 3

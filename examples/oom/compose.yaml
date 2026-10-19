@@ -1,0 +1,11 @@
+# Allocates 64 MiB/s until the 128 MiB cgroup limit kills it (exit 137,
+# State.OOMKilled=true). bop refuses to run oom without a memory limit.
+# memswap_limit equal to mem_limit stops swap from absorbing the allocation.
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_MODE: "oom rate=64"
+    mem_limit: 128m
+    memswap_limit: 128m
+    restart: "no"

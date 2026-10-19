@@ -1,0 +1,10 @@
+# BOP_ADDR moves the data listener; the image healthcheck follows it.
+# BOP_CONTROL_ADDR moves the control listener; `docker compose exec` inherits it.
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_ADDR: ":9000"
+      BOP_CONTROL_ADDR: "127.0.0.1:9902"
+    ports:
+      - "9000:9000"

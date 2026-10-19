@@ -1,0 +1,9 @@
+# Healthy for 30s, then /healthz returns 503. The process keeps running.
+# Recover with: docker compose exec bop bop healthy
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_MODE: "unhealthy after=30s"
+    ports:
+      - "8080:8080"

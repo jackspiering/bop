@@ -1,0 +1,8 @@
+# Every start exits with code 1 after 5s; the restart policy brings it back.
+# Watch it with: docker inspect -f '{{.RestartCount}}' <container>
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_MODE: "crash-loop interval=5s exit=1"
+    restart: always
