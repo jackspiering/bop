@@ -1,0 +1,202 @@
+//go:build integration
+
+package integration
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// composeProject is one example brought up under a unique project name.
+type composeProject struct {
+	t     *testing.T
+	args  []string // -p <name> -f example [-f override]
+	env   []string
+	files []string
+}
+
+// upExample starts examples/<name> with host port publishing removed (so
+// examples can run in parallel and never collide with something on the
+// machine) and the locally built image.
+func upExample(t *testing.T, name string, portServices ...string) *composeProject {
+	t.Helper()
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := uniqueName(t)
+	args := []string{"compose", "-p", project, "-f", filepath.Join(root, "examples", name, "compose.yaml")}
+	if len(portServices) > 0 {
+		var b strings.Builder
+		b.WriteString("services:\n")
+		for _, s := range portServices {
+			b.WriteString("  " + s + ":\n    ports: !reset []\n")
+		}
+		override := filepath.Join(t.TempDir(), "override.yaml")
+		if err := os.WriteFile(override, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "-f", override)
+	}
+	p := &composeProject{t: t, args: args, env: append(os.Environ(), "BOP_IMAGE="+image)}
+	t.Cleanup(func() { _, _ = p.run(2*time.Minute, "down", "-v", "-t", "1") })
+	if out, err := p.run(2*time.Minute, "up", "-d"); err != nil {
+		t.Fatalf("compose up: %v\n%s", err, out)
+	}
+	return p
+}
+
+func (p *composeProject) run(timeout time.Duration, args ...string) (string, error) {
+	cmd := exec.Command("docker", append(append([]string{}, p.args...), args...)...)
+	cmd.Env = p.env
+	done := make(chan struct{})
+	var out []byte
+	var err error
+	go func() { out, err = cmd.CombinedOutput(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		_ = cmd.Process.Kill()
+		<-done
+		err = os.ErrDeadlineExceeded
+	}
+	return strings.TrimSpace(string(out)), err
+}
+
+// container returns the ID of a service's container.
+func (p *composeProject) container(service string) string {
+	p.t.Helper()
+	out, err := p.run(time.Minute, "ps", "-a", "-q", service)
+	if err != nil || out == "" {
+		p.t.Fatalf("compose ps %s: %v %q", service, err, out)
+	}
+	return strings.Fields(out)[0]
+}
+
+// TestExamplesRun brings each example up and checks its behaviour from
+// Docker's point of view. Long timers are not waited out: the docker-run tests
+// cover that behaviour, here the aim is to prove the example is wired right.
+func TestExamplesRun(t *testing.T) {
+	t.Parallel()
+
+	t.Run("healthy", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "healthy", "bop").container("bop")
+		waitHealth(t, c, "healthy", 40*time.Second)
+	})
+
+	t.Run("unhealthy", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "unhealthy", "bop").container("bop")
+		waitHealth(t, c, "healthy", 40*time.Second)
+		if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "unhealthy after=30s") {
+			t.Fatalf("status:\n%s", out)
+		}
+	})
+
+	t.Run("crash", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "crash").container("bop")
+		waitExited(t, c, 60*time.Second)
+		if got := exitCode(t, c); got != 3 {
+			t.Fatalf("exit code = %d, want 3", got)
+		}
+	})
+
+	t.Run("crash-loop", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "crash-loop").container("bop")
+		waitFor(t, c, 60*time.Second, "a restart", func() bool {
+			return inspect(t, c, "{{.RestartCount}}") != "0"
+		})
+	})
+
+	t.Run("oom", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "oom").container("bop")
+		waitExited(t, c, 60*time.Second)
+		if got := exitCode(t, c); got != 137 {
+			t.Fatalf("exit code = %d, want 137\n%s", got, logs(c))
+		}
+		// The limit comes from the example, not from this test.
+		if got := inspect(t, c, "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}"); got != "134217728 134217728" {
+			t.Fatalf("memory limits = %q", got)
+		}
+	})
+
+	t.Run("hang", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "hang", "bop").container("bop")
+		// Unhealthy once the image's start period (10s) has passed.
+		waitHealth(t, c, "unhealthy", 60*time.Second)
+		if inspect(t, c, "{{.State.Running}}") != "true" {
+			t.Fatal("hung container must keep running")
+		}
+		mustExec(t, c, "bop", "healthy")
+		waitHealth(t, c, "healthy", 30*time.Second)
+	})
+
+	t.Run("start-delay", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "start-delay", "bop").container("bop")
+		waitHealth(t, c, "starting", 10*time.Second)
+		mustExec(t, c, "bop", "status")
+		waitHealth(t, c, "healthy", 60*time.Second)
+	})
+
+	t.Run("sigterm", func(t *testing.T) {
+		t.Parallel()
+		p := upExample(t, "sigterm")
+		c := p.container("bop")
+		waitFor(t, c, 30*time.Second, "running", func() bool { return inspect(t, c, "{{.State.Running}}") == "true" })
+		time.Sleep(time.Second) // let bop install its signal handler
+		start := time.Now()
+		if out, err := p.run(time.Minute, "stop"); err != nil {
+			t.Fatalf("compose stop: %v\n%s", err, out)
+		}
+		if d := time.Since(start); d < 5*time.Second {
+			t.Fatalf("stop returned after %s, before the 5s grace period", d)
+		}
+		if got := exitCode(t, c); got != 137 {
+			t.Fatalf("exit code = %d, want 137", got)
+		}
+	})
+
+	t.Run("custom-addr", func(t *testing.T) {
+		t.Parallel()
+		c := upExample(t, "custom-addr", "bop").container("bop")
+		waitHealth(t, c, "healthy", 40*time.Second)
+		mustExec(t, c, "bop", "status")
+	})
+
+	t.Run("sidecar", func(t *testing.T) {
+		t.Parallel()
+		p := upExample(t, "sidecar", "parent")
+		parent, sidecar := p.container("parent"), p.container("sidecar")
+		waitHealth(t, parent, "healthy", 40*time.Second)
+		waitHealth(t, sidecar, "healthy", 60*time.Second)
+		mustDocker(t, "restart", "-t", "5", parent)
+		waitHealth(t, sidecar, "unhealthy", 90*time.Second)
+	})
+
+	t.Run("restart-vs-recreate", func(t *testing.T) {
+		t.Parallel()
+		p := upExample(t, "restart-vs-recreate", "bop")
+		c := p.container("bop")
+		waitHealth(t, c, "healthy", 40*time.Second)
+		mustExec(t, c, "bop", "unhealthy", "sticky=true")
+		waitHealth(t, c, "unhealthy", 30*time.Second)
+
+		mustDocker(t, "restart", "-t", "5", c)
+		waitHealth(t, c, "unhealthy", 30*time.Second)
+
+		if out, err := p.run(2*time.Minute, "up", "-d", "--force-recreate"); err != nil {
+			t.Fatalf("recreate: %v\n%s", err, out)
+		}
+		waitHealth(t, p.container("bop"), "healthy", 40*time.Second)
+	})
+}
