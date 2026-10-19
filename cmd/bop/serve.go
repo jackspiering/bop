@@ -106,7 +106,6 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	go serveHTTP(log, "control", controlLn, srv.ControlHandler())
 
 	if err := machine.Set(boot, 0); err != nil {
-		controlLn.Close()
 		return usageError(stderr, "%v", err)
 	}
 
