@@ -351,27 +351,49 @@ func TestInvalidUsageExits2(t *testing.T) {
 
 func oomFlags() []string { return []string{"--memory=64m", "--memory-swap=64m"} }
 
+// expectOOMKilled starts a container with start, waits for it to die and
+// asserts exit 137 and State.OOMKilled. Docker occasionally misses the cgroup
+// OOM event when the container dies quickly (the exit is recorded with
+// OOMKilled=false although the kernel killed it; seen about 1 in 30 runs), so
+// that one outcome is retried with a fresh container. Any other outcome fails.
+func expectOOMKilled(t *testing.T, start func(t *testing.T) string) {
+	t.Helper()
+	const attempts = 3
+	for attempt := 1; ; attempt++ {
+		c := start(t)
+		waitExited(t, c, 60*time.Second)
+		if got := exitCode(t, c); got != 137 {
+			t.Fatalf("exit code = %d, want 137\n%s", got, logs(c))
+		}
+		killed := false
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && !killed; time.Sleep(250 * time.Millisecond) {
+			killed = inspect(t, c, "{{.State.OOMKilled}}") == "true"
+		}
+		if killed {
+			return
+		}
+		if attempt == attempts {
+			t.Fatalf("exit 137 but State.OOMKilled=false in %d attempts\n%s", attempts, logs(c))
+		}
+		t.Logf("attempt %d: exit 137 without OOMKilled (Docker missed the OOM event), retrying", attempt)
+	}
+}
+
 func TestOOMAtBoot(t *testing.T) {
 	t.Parallel()
-	c := run(t, cat(oomFlags(), env("BOP_MODE", "oom rate=32"), []string{image})...)
-	waitExited(t, c, 60*time.Second)
-	if inspect(t, c, "{{.State.OOMKilled}}") != "true" {
-		t.Fatalf("OOMKilled = false\n%s", logs(c))
-	}
-	if got := exitCode(t, c); got != 137 {
-		t.Fatalf("exit code = %d, want 137", got)
-	}
+	expectOOMKilled(t, func(t *testing.T) string {
+		return run(t, cat(oomFlags(), env("BOP_MODE", "oom rate=32"), []string{image})...)
+	})
 }
 
 func TestOOMViaExec(t *testing.T) {
 	t.Parallel()
-	c := run(t, cat(oomFlags(), []string{image})...)
-	waitHealth(t, c, "healthy", 30*time.Second)
-	mustExec(t, c, "bop", "oom", "rate=32")
-	waitExited(t, c, 60*time.Second)
-	if inspect(t, c, "{{.State.OOMKilled}}") != "true" || exitCode(t, c) != 137 {
-		t.Fatalf("OOMKilled=%s exit=%d", inspect(t, c, "{{.State.OOMKilled}}"), exitCode(t, c))
-	}
+	expectOOMKilled(t, func(t *testing.T) string {
+		c := run(t, cat(oomFlags(), []string{image})...)
+		waitHealth(t, c, "healthy", 30*time.Second)
+		mustExec(t, c, "bop", "oom", "rate=32")
+		return c
+	})
 }
 
 func TestOOMRefusedWithoutLimit(t *testing.T) {
