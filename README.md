@@ -1,5 +1,8 @@
 # BoP (Broken on Purpose)
 
+[![Publish](https://github.com/jackspiering/bop/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/jackspiering/bop/actions/workflows/publish.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A container that fails on demand: unhealthy, crash, crash-loop, OOM, hang and
 SIGTERM behaviours, switchable at runtime. It knows nothing about any
 orchestrator, so you can point it at anything that watches, heals or
@@ -9,7 +12,7 @@ policies, Swarm, sidecars.
 > **Not for production.** BoP is built to misbehave. Do not put it behind
 > anything you care about, and do not expose its ports to untrusted networks.
 
-- Image: `ghcr.io/jackspiering/bop` (linux/amd64, linux/arm64), `:edge` or `:sha-<short>`
+- Image: `ghcr.io/jackspiering/bop` (linux/amd64, linux/arm64), see [Releases](#releases)
 - Go standard library only, static binary, distroless nonroot (uid 65532)
 - MIT licensed
 
@@ -169,6 +172,22 @@ cosign verify ghcr.io/jackspiering/bop:edge \
   --certificate-identity-regexp '^https://github.com/jackspiering/bop/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+## Releases
+
+| Tag | Meaning |
+|---|---|
+| `:0.1.0` | An immutable release. Pin this (or its digest) in tests. |
+| `:0.1` | The latest patch of a minor version. |
+| `:latest` | The newest stable release. |
+| `:edge` | Every push to `main`. Moves; `bop version` shows `edge-<sha>`. |
+| `:sha-<short>` | One specific commit on `main`. |
+
+Pushing a `vX.Y.Z` tag on a commit that is on `main` runs the same CI, then
+publishes the versioned tags, signs the digest and creates the GitHub Release
+with generated notes. Tags like `v1.0.0-rc.1` publish only their exact version
+and mark the release as a pre-release. All tags are signed the same way, so the
+`cosign verify` command above works for any of them.
 
 ## Development
 
