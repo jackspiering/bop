@@ -2,8 +2,10 @@ package mode
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -132,18 +134,32 @@ func TestMachineSwitchCancelsPendingCrash(t *testing.T) {
 }
 
 func TestMachineCrashLoopUsesInterval(t *testing.T) {
-	codes := make(chan int, 1)
-	mc := NewMachine(Hooks{Exit: func(c int) { codes <- c }})
-	if err := mc.Set(Mode{Name: CrashLoop, Exit: 9, Interval: 50 * time.Millisecond}, 0); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		interval, minDelay, want time.Duration
+	}{
+		{80 * time.Millisecond, 0, 80 * time.Millisecond},
+		{80 * time.Millisecond, 10 * time.Millisecond, 80 * time.Millisecond},
+		{10 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond},
 	}
-	select {
-	case c := <-codes:
-		if c != 9 {
-			t.Fatalf("exit code = %d", c)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("crash-loop did not fire")
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("interval=%s minDelay=%s", tt.interval, tt.minDelay), func(t *testing.T) {
+			// The bubble's fake clock makes the elapsed time exact.
+			synctest.Test(t, func(t *testing.T) {
+				codes := make(chan int, 1)
+				mc := NewMachine(Hooks{Exit: func(c int) { codes <- c }})
+				start := time.Now()
+				if err := mc.Set(Mode{Name: CrashLoop, Exit: 9, Interval: tt.interval}, tt.minDelay); err != nil {
+					t.Fatal(err)
+				}
+				c := <-codes
+				if c != 9 {
+					t.Fatalf("exit code = %d, want 9", c)
+				}
+				if got := time.Since(start); got != tt.want {
+					t.Fatalf("crash-loop exited after %s, want %s", got, tt.want)
+				}
+			})
+		})
 	}
 }
 
