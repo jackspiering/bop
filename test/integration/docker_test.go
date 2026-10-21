@@ -49,7 +49,44 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "docker build (sidecar) failed: %v\n%s\n", err, out)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	// t.Cleanup does not run when -timeout fires or the run is interrupted,
+	// so leftovers from an earlier run are removed first.
+	sweep(namePrefix)
+	code := m.Run()
+	sweep(namePrefix)
+	os.Exit(code)
+}
+
+// namePrefix starts the name of every container, network, volume and Compose
+// project the tests create.
+const namePrefix = "bop-it-"
+
+// sweep removes, best effort, the containers, networks and volumes whose names
+// start with prefix. Docker's name filter matches substrings, so the names
+// are checked again here.
+func sweep(prefix string) {
+	for _, kind := range []struct {
+		list   []string
+		remove []string
+	}{
+		{[]string{"ps", "-a", "--format", "{{.Names}}"}, []string{"rm", "-f", "-v"}},
+		{[]string{"network", "ls", "--format", "{{.Name}}"}, []string{"network", "rm"}},
+		{[]string{"volume", "ls", "--format", "{{.Name}}"}, []string{"volume", "rm", "-f"}},
+	} {
+		out, err := dockerCtx(time.Minute, append(kind.list, "--filter", "name="+prefix)...)
+		if err != nil {
+			continue
+		}
+		var names []string
+		for _, n := range strings.Fields(out) {
+			if strings.HasPrefix(n, prefix) {
+				names = append(names, n)
+			}
+		}
+		if len(names) > 0 {
+			_, _ = dockerCtx(2*time.Minute, append(kind.remove, names...)...)
+		}
+	}
 }
 
 func repoRoot() (string, error) {
@@ -94,7 +131,42 @@ func uniqueName(t *testing.T) string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	base := strings.ToLower(nameUnsafe.ReplaceAllString(t.Name(), "-"))
-	return "bop-it-" + base + "-" + hex.EncodeToString(b[:])
+	return namePrefix + base + "-" + hex.EncodeToString(b[:])
+}
+
+func TestSweepRemovesOnlyPrefixed(t *testing.T) {
+	t.Parallel()
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	// Under namePrefix, so the suite's own sweep removes anything an
+	// interrupted run of this test leaves behind.
+	prefix := namePrefix + "sweep-" + hex.EncodeToString(b[:]) + "-"
+	victim, network, volume := prefix+"victim", prefix+"net", prefix+"vol"
+	// Docker's name filter matches this too, but it does not start with prefix.
+	survivor := namePrefix + "keep-" + prefix + "survivor"
+	t.Cleanup(func() {
+		_, _ = dockerCtx(time.Minute, "rm", "-f", victim, survivor)
+		_, _ = dockerCtx(time.Minute, "network", "rm", network)
+		_, _ = dockerCtx(time.Minute, "volume", "rm", "-f", volume, survivor)
+	})
+	mustDocker(t, "run", "-d", "--restart=always", "--name", victim, image)
+	mustDocker(t, "run", "-d", "--name", survivor, image)
+	mustDocker(t, "network", "create", network)
+	mustDocker(t, "volume", "create", volume)
+	mustDocker(t, "volume", "create", survivor)
+
+	sweep(prefix)
+
+	for _, gone := range [][]string{{"container", victim}, {"network", network}, {"volume", volume}} {
+		if _, err := docker(t, gone[0], "inspect", gone[1]); err == nil {
+			t.Errorf("sweep left %s %s", gone[0], gone[1])
+		}
+	}
+	for _, kept := range []string{"container", "volume"} {
+		if _, err := docker(t, kept, "inspect", survivor); err != nil {
+			t.Errorf("sweep removed %s %s, which only contains the prefix", kept, survivor)
+		}
+	}
 }
 
 // run starts a detached container and removes it when the test ends.
