@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,11 +47,35 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.sigterm, err = mode.ParseSigterm(getenv("BOP_ON_SIGTERM")); err != nil {
 		return c, err
 	}
-	c.addr = envOr(getenv, "BOP_ADDR", defaultAddr)
-	c.controlAddr = envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)
+	if c.addr, err = parseListenAddr("BOP_ADDR", envOr(getenv, "BOP_ADDR", defaultAddr)); err != nil {
+		return c, err
+	}
+	if c.controlAddr, err = parseListenAddr("BOP_CONTROL_ADDR", envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)); err != nil {
+		return c, err
+	}
 	c.store = mode.Store{Dir: envOr(getenv, "BOP_STATE_DIR", defaultStateDir)}
 	c.oomUnsafe = getenv("BOP_OOM_UNSAFE") == "1"
 	return c, nil
+}
+
+// parseListenAddr checks a listen address without resolving it, so that a
+// typo fails at boot rather than when the data listener binds after
+// BOP_START_DELAY. It accepts [host]:port with a numeric port, and a bare port
+// ("9000"), which it normalises to ":9000". The listeners and the
+// healthcheck's default URL both use it, so they accept the same forms.
+func parseListenAddr(name, v string) (string, error) {
+	addr := v
+	if !strings.Contains(addr, ":") {
+		addr = ":" + addr
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		_, err = strconv.ParseUint(port, 10, 16)
+	}
+	if err != nil {
+		return "", &mode.UsageError{Msg: fmt.Sprintf("invalid %s=%q: expected [host]:port or a bare port", name, v)}
+	}
+	return addr, nil
 }
 
 func serve(stderr io.Writer, getenv func(string) string) int {

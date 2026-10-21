@@ -349,6 +349,24 @@ func TestInvalidUsageExits2(t *testing.T) {
 	}
 }
 
+// A malformed address is a usage error at boot, not a data-listener failure
+// once BOP_START_DELAY has passed.
+func TestInvalidAddrExits2BeforeStartDelay(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+	c := run(t, cat(env("BOP_ADDR", "nope"), env("BOP_START_DELAY", "20s"), []string{image})...)
+	waitExited(t, c, 30*time.Second)
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("exited after %s, want immediately (not after the 20s start delay)", d)
+	}
+	if got := exitCode(t, c); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+	if out := logs(c); !strings.Contains(out, `invalid BOP_ADDR="nope"`) || !strings.Contains(out, "Usage:") {
+		t.Fatalf("expected a usage message, got:\n%s", out)
+	}
+}
+
 func oomFlags() []string { return []string{"--memory=64m", "--memory-swap=64m"} }
 
 // expectOOMKilled starts a container with start, waits for it to die and
@@ -859,6 +877,19 @@ func TestCustomAddresses(t *testing.T) {
 	}
 	if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9902") {
 		t.Fatalf("listeners not on the configured addresses:\n%s", out)
+	}
+}
+
+// A bare port is shorthand for ":port"; the listener, the image's healthcheck
+// and docker exec must all agree on it.
+func TestBarePortAddresses(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, env("BOP_ADDR", "9000"), env("BOP_CONTROL_ADDR", "9902"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=[::]:9902") {
+		t.Fatalf("listeners not on the configured ports:\n%s", out)
 	}
 }
 

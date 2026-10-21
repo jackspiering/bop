@@ -73,6 +73,22 @@ func TestRunExecWithoutServerExits1(t *testing.T) {
 	}
 }
 
+func TestRunExecUsesServeAddrGrammar(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"mode":"healthy","healthy":true}`))
+	}))
+	defer ts.Close()
+	_, port, _ := strings.Cut(strings.TrimPrefix(ts.URL, "http://"), ":")
+	var out, errb bytes.Buffer
+	// serve binds a bare port on all interfaces; the CLI must find it on loopback.
+	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": port})); code != 0 {
+		t.Fatalf("status with BOP_CONTROL_ADDR=%s = %d, stderr %q", port, code, errb.String())
+	}
+	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": "nope"})); code != 2 {
+		t.Fatalf("status with BOP_CONTROL_ADDR=nope = %d, want 2", code)
+	}
+}
+
 func TestDefaultHealthURL(t *testing.T) {
 	for in, want := range map[string]string{
 		":8080":          "http://127.0.0.1:8080/healthz",
@@ -80,10 +96,44 @@ func TestDefaultHealthURL(t *testing.T) {
 		"[::]:9000":      "http://127.0.0.1:9000/healthz",
 		"10.1.2.3:81":    "http://10.1.2.3:81/healthz",
 		"localhost:7000": "http://localhost:7000/healthz",
-		"9000":           "http://127.0.0.1:9000/healthz",
+		"9000":           "http://127.0.0.1:9000/healthz", // a bare port, as the listener accepts
 	} {
-		if got := defaultHealthURL(in); got != want {
-			t.Errorf("defaultHealthURL(%q) = %q, want %q", in, got, want)
+		if got, err := defaultHealthURL(in); err != nil || got != want {
+			t.Errorf("defaultHealthURL(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	// What the listener rejects, the healthcheck rejects too.
+	for _, in := range []string{":http", "nope", ":99999", "::1:9000"} {
+		if got, err := defaultHealthURL(in); err == nil {
+			t.Errorf("defaultHealthURL(%q) = %q, want an error", in, got)
+		}
+	}
+	var errb bytes.Buffer
+	if code := healthcheck(nil, &errb, env(map[string]string{"BOP_ADDR": "nope"})); code != 2 {
+		t.Errorf("healthcheck with BOP_ADDR=nope = %d, want 2", code)
+	}
+}
+
+func TestParseListenAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		":8080":           ":8080",
+		"9000":            ":9000",
+		"0":               ":0",
+		"127.0.0.1:9901":  "127.0.0.1:9901",
+		"[::1]:9000":      "[::1]:9000",
+		"[::]:9000":       "[::]:9000",
+		"localhost:7000":  "localhost:7000",
+		"bop.local:65535": "bop.local:65535",
+	} {
+		if got, err := parseListenAddr("BOP_ADDR", in); err != nil || got != want {
+			t.Errorf("parseListenAddr(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", ":", "nope", ":http", ":99999", "127.0.0.1:70000", "::1:9000", ":-1", "1.2.3.4:"} {
+		_, err := parseListenAddr("BOP_ADDR", in)
+		var ue *mode.UsageError
+		if !errors.As(err, &ue) || !strings.Contains(err.Error(), "BOP_ADDR") {
+			t.Errorf("parseListenAddr(%q) = %v, want a usage error naming BOP_ADDR", in, err)
 		}
 	}
 }
@@ -147,12 +197,24 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("config = %+v", cfg)
 	}
 
+	// A bare port means all interfaces, for both listeners.
+	cfg, err = loadConfig(env(map[string]string{"BOP_ADDR": "9000", "BOP_CONTROL_ADDR": "9902"}))
+	if err != nil || cfg.addr != ":9000" || cfg.controlAddr != ":9902" {
+		t.Errorf("bare ports: addr=%q control=%q, %v", cfg.addr, cfg.controlAddr, err)
+	}
+
 	for _, bad := range []map[string]string{
 		{"BOP_MODE": "explode"},
 		{"BOP_MODE": "clear"},
 		{"BOP_START_DELAY": "soon"},
 		{"BOP_START_DELAY": "-1s"},
 		{"BOP_ON_SIGTERM": "reboot"},
+		{"BOP_ADDR": ":99999"},
+		{"BOP_ADDR": "nope"},
+		{"BOP_ADDR": "::1:9000"},
+		{"BOP_ADDR": ":http"},
+		{"BOP_CONTROL_ADDR": "nope"},
+		{"BOP_CONTROL_ADDR": "127.0.0.1:70000"},
 	} {
 		_, err := loadConfig(env(bad))
 		var ue *mode.UsageError
