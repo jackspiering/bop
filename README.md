@@ -108,7 +108,8 @@ On start, a sticky file overrides `BOP_MODE`. `bop healthy sticky=true` and
 `bop clear` remove it. A non-sticky switch does not touch the file, so the
 sticky mode returns on the next restart. Sticky cannot work with
 `read_only: true`; bop detects the write failure, says so, and leaves the mode
-unchanged. Note that `bop crash sticky=true` makes the container crash on every
+unchanged. `bop clear` and `bop healthy sticky=true` still return to `healthy`
+on a read-only root, since there is no sticky file to remove. Note that `bop crash sticky=true` makes the container crash on every
 restart; recreate it to get out.
 
 ```sh

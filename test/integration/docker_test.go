@@ -578,6 +578,27 @@ func TestStickyOnReadOnlyRootFails(t *testing.T) {
 	waitHealth(t, c, "unhealthy", 30*time.Second)
 }
 
+func TestClearOnReadOnlyRoot(t *testing.T) {
+	t.Parallel()
+	// Linux returns EROFS, not ENOENT, when removing a missing name on a
+	// read-only mount; there is nothing to clear, so these must still work.
+	for _, clear := range [][]string{{"bop", "clear"}, {"bop", "healthy", "sticky=true"}} {
+		t.Run(strings.Join(clear[1:], "-"), func(t *testing.T) {
+			t.Parallel()
+			c := run(t, cat(fastHealth, []string{"--read-only"}, []string{image})...)
+			waitHealth(t, c, "healthy", 30*time.Second)
+			mustExec(t, c, "bop", "unhealthy")
+			waitHealth(t, c, "unhealthy", 30*time.Second)
+
+			mustExec(t, c, clear...)
+			waitHealth(t, c, "healthy", 30*time.Second)
+			if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      false") {
+				t.Fatalf("status:\n%s", out)
+			}
+		})
+	}
+}
+
 func instanceID(t *testing.T, c string) string {
 	t.Helper()
 	for _, line := range strings.Split(mustExec(t, c, "bop", "status"), "\n") {

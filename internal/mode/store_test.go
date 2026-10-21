@@ -1,9 +1,12 @@
 package mode
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -56,5 +59,32 @@ func TestStoreSaveFailureExplainsReadOnly(t *testing.T) {
 	err := Store{Dir: filepath.Join(blocker, "bop")}.Save(Mode{Name: Hang})
 	if err == nil || !strings.Contains(err.Error(), "read-only") {
 		t.Fatalf("Save error = %v, want read-only hint", err)
+	}
+}
+
+// stubRemove makes removeFile fail with EROFS, as Linux does on a read-only
+// mount whether or not the name exists.
+func stubRemove(t *testing.T) {
+	t.Helper()
+	orig := removeFile
+	removeFile = func(p string) error { return &fs.PathError{Op: "remove", Path: p, Err: syscall.EROFS} }
+	t.Cleanup(func() { removeFile = orig })
+}
+
+func TestStoreClearToleratesEROFSForMissingFile(t *testing.T) {
+	stubRemove(t)
+	if err := (Store{Dir: t.TempDir()}).Clear(); err != nil {
+		t.Fatalf("Clear = %v, want nil: there is nothing to remove", err)
+	}
+}
+
+func TestStoreClearReportsEROFSForExistingFile(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	if err := s.Save(Mode{Name: Hang}); err != nil {
+		t.Fatal(err)
+	}
+	stubRemove(t)
+	if err := s.Clear(); !errors.Is(err, syscall.EROFS) {
+		t.Fatalf("Clear = %v, want EROFS", err)
 	}
 }

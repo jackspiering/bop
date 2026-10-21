@@ -56,10 +56,20 @@ func (s Store) Save(m Mode) error {
 	return nil
 }
 
+// removeFile is os.Remove, replaceable in tests.
+var removeFile = os.Remove
+
 // Clear removes the sticky file. A missing file is not an error.
 func (s Store) Clear() error {
-	if err := os.Remove(s.path()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("cannot remove sticky mode %s: %w", s.path(), err)
+	p := s.path()
+	err := removeFile(p)
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	return nil
+	// On a read-only mount Linux unlink(2)/rmdir(2) return EROFS before
+	// looking the name up, even when it does not exist.
+	if _, lerr := os.Lstat(p); errors.Is(lerr, fs.ErrNotExist) {
+		return nil
+	}
+	return fmt.Errorf("cannot remove sticky mode %s: %w", p, err)
 }
