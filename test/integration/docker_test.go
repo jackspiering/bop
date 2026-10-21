@@ -416,6 +416,35 @@ func TestOOMRefusedWithoutLimit(t *testing.T) {
 	if inspect(t, boot, "{{.State.OOMKilled}}") != "false" {
 		t.Fatal("must not have been OOM killed")
 	}
+
+	// A refused sticky oom persists nothing, so it cannot come back.
+	sticky := run(t, cat(env("BOP_MODE", "oom sticky=true"), []string{image})...)
+	waitExited(t, sticky, 30*time.Second)
+	if got := exitCode(t, sticky); got != 2 {
+		t.Fatalf("boot oom sticky=true without limit: exit code = %d, want 2", got)
+	}
+	if hasStickyFile(t, sticky) {
+		t.Fatal("a refused oom sticky=true left /tmp/bop/mode behind")
+	}
+}
+
+func TestOOMStickyAtBootPersists(t *testing.T) {
+	t.Parallel()
+	var c string // the last attempt's container
+	expectOOMKilled(t, func(t *testing.T) string {
+		c = run(t, cat(oomFlags(), env("BOP_MODE", "oom rate=32 sticky=true"), []string{image})...)
+		return c
+	})
+	if !hasStickyFile(t, c) {
+		t.Fatal("oom sticky=true with a memory limit did not persist /tmp/bop/mode")
+	}
+}
+
+// hasStickyFile reports whether the container (running or not) has a sticky file.
+func hasStickyFile(t *testing.T, c string) bool {
+	t.Helper()
+	_, err := docker(t, "cp", c+":/tmp/bop/mode", "-")
+	return err == nil
 }
 
 func TestHang(t *testing.T) {
@@ -709,6 +738,38 @@ func TestStateDirUnwritable(t *testing.T) {
 	}
 	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        healthy") {
 		t.Fatalf("a failed sticky write must not change the mode:\n%s", out)
+	}
+}
+
+// TestExecBopInRunningContainer: `docker exec <c> bop` (looking for help) runs
+// a second serve. It must fail on the busy control address before it logs,
+// writes or chowns anything, even as root, so the next start is unaffected.
+func TestExecBopInRunningContainer(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, env("BOP_MODE", "unhealthy sticky=true"), []string{image})...)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	mustExec(t, c, "bop", "clear")
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if hasStickyFile(t, c) {
+		t.Fatal("bop clear left the sticky file")
+	}
+
+	out, err := docker(t, "exec", "-u", "0", c, "bop")
+	if err == nil {
+		t.Fatalf("docker exec bop succeeded:\n%s", out)
+	}
+	if !strings.Contains(out, "127.0.0.1:9901 is already in use") || strings.Contains(out, "msg=starting") {
+		t.Fatalf("docker exec bop output:\n%s", out)
+	}
+	if hasStickyFile(t, c) {
+		t.Fatal("docker exec bop wrote a sticky file")
+	}
+
+	// The next start comes up normally (BOP_MODE recreates its sticky file).
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status after restart:\n%s", out)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -171,14 +172,14 @@ func TestServeInvalidStickyFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			var errb bytes.Buffer
-			// serve returns before binding either listener.
+			// serve returns before either listener serves.
 			code := serve(&errb, env(map[string]string{
 				"BOP_STATE_DIR": dir, "BOP_CONTROL_ADDR": "127.0.0.1:0", "BOP_ADDR": "127.0.0.1:0",
 			}))
 			if code != 2 {
 				t.Fatalf("serve = %d, want 2 (stderr %q)", code, errb.String())
 			}
-			// bop clear needs the control listener, which never binds.
+			// bop clear needs the control listener, which never serves.
 			for _, bad := range []string{"bop clear", "Usage:"} {
 				if strings.Contains(errb.String(), bad) {
 					t.Errorf("stderr mentions %q:\n%s", bad, errb.String())
@@ -325,6 +326,8 @@ func TestServeSigtermDuringBootFollowsPolicy(t *testing.T) {
 		t.Skipf("mkfifo: %v", err)
 	}
 	cmd := serveHelper(t, "BOP_STATE_DIR="+dir, "BOP_ON_SIGTERM=exit:7")
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -362,9 +365,55 @@ func TestServeSigtermDuringBootFollowsPolicy(t *testing.T) {
 	case err := <-done:
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) || ee.ExitCode() != 7 {
-			t.Fatalf("SIGTERM during boot: %v, want exit status 7 (BOP_ON_SIGTERM=exit:7)", err)
+			t.Fatalf("SIGTERM during boot: %v, want exit status 7 (BOP_ON_SIGTERM=exit:7)\n%s", err, output.String())
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("bop did not exit after SIGTERM")
+	}
+}
+
+func TestServeControlAddrInUseHasNoSideEffects(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	code := run(nil, &out, &errb, env(map[string]string{
+		"BOP_CONTROL_ADDR": ln.Addr().String(), "BOP_ADDR": "127.0.0.1:0",
+		"BOP_STATE_DIR": dir, "BOP_MODE": "unhealthy sticky=true",
+	}))
+	if code == 0 {
+		t.Fatal("serve with its control address in use exited 0")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mode")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("serve that could not start left a sticky file behind: %v", err)
+	}
+	if !strings.Contains(errb.String(), ln.Addr().String()) || !strings.Contains(errb.String(), "bop status") {
+		t.Fatalf("stderr lacks a hint naming the control address:\n%s", errb.String())
+	}
+}
+
+func TestServeStickyOOMRefusedBeforePersist(t *testing.T) {
+	memMax := filepath.Join(t.TempDir(), "memory.max")
+	if err := os.WriteFile(memMax, []byte("max\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := memoryMaxPath
+	memoryMaxPath = memMax
+	t.Cleanup(func() { memoryMaxPath = old })
+
+	dir := t.TempDir()
+	var out, errb bytes.Buffer
+	code := run(nil, &out, &errb, env(map[string]string{
+		"BOP_CONTROL_ADDR": "127.0.0.1:0", "BOP_ADDR": "127.0.0.1:0",
+		"BOP_STATE_DIR": dir, "BOP_MODE": "oom sticky=true",
+	}))
+	if code != 2 || !strings.Contains(errb.String(), "no memory limit") {
+		t.Fatalf("code = %d, want 2 with the oom refusal\n%s", code, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mode")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused oom sticky=true persisted a sticky file: %v", err)
 	}
 }

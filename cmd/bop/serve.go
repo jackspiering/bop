@@ -17,6 +17,9 @@ import (
 	"github.com/jackspiering/bop/internal/server"
 )
 
+// memoryMaxPath is the cgroup file the oom guard reads; tests point it elsewhere.
+var memoryMaxPath = oom.MemoryMaxPath
+
 // config is the boot-time configuration, parsed from BOP_* variables.
 type config struct {
 	boot        mode.Mode
@@ -65,6 +68,32 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		return usageError(stderr, "%v", err)
 	}
 
+	// The control listener binds before anything else has side effects, so a
+	// second `bop` started in a running container (docker exec <c> bop) fails
+	// here without touching the sticky file. It binds before the start delay.
+	controlLn, err := net.Listen("tcp", cfg.controlAddr)
+	if errors.Is(err, syscall.EADDRINUSE) {
+		fmt.Fprintf(stderr, "bop: %s is already in use; bop may already be running in this container. Use 'bop status' or 'bop help'\n", cfg.controlAddr)
+		return 1
+	}
+	if err != nil {
+		log.Error("control listener", "err", err)
+		return 1
+	}
+	served := false
+	defer func() {
+		if !served { // a boot check failed; serveHTTP owns it otherwise
+			controlLn.Close()
+		}
+	}()
+
+	checkOOM := func() error {
+		if cfg.oomUnsafe {
+			return nil
+		}
+		return oom.Check(memoryMaxPath)
+	}
+
 	// bop cannot tell a tmpfs (emptied on every restart) from a volume or an
 	// emptyDir (which outlive the container), so it only warns.
 	if own, err := cfg.store.OnOwnMount(); err == nil && own {
@@ -83,7 +112,15 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	case boot.Sticky:
 		if boot.Name == mode.Healthy {
 			boot.Sticky = false
-		} else if err := cfg.store.Save(boot); err != nil {
+			break
+		}
+		// Refuse oom before persisting it, as Server.apply does at runtime.
+		if boot.Name == mode.OOM {
+			if err := checkOOM(); err != nil {
+				return usageError(stderr, "%v", err)
+			}
+		}
+		if err := cfg.store.Save(boot); err != nil {
 			return bootError(stderr, err)
 		}
 	}
@@ -97,12 +134,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 			log.Info("allocating memory until the cgroup kills this process", "mib_per_s", rate)
 			oom.Run(rate, stop)
 		},
-		CheckOOM: func() error {
-			if cfg.oomUnsafe {
-				return nil
-			}
-			return oom.Check(oom.MemoryMaxPath)
-		},
+		CheckOOM: checkOOM,
 		OnChange: func(s mode.Snapshot) {
 			log.Info("state", "mode", s.Mode.String(), "healthy", s.Healthy)
 		},
@@ -111,13 +143,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	log.Info("starting", "version", version, "pid", os.Getpid(), "instance_id", srv.InstanceID(),
 		"addr", cfg.addr, "control_addr", cfg.controlAddr, "start_delay", cfg.startDelay.String(),
 		"on_sigterm", envOr(getenv, "BOP_ON_SIGTERM", "exit:0"))
-
-	// The control listener binds immediately, before the start delay.
-	controlLn, err := net.Listen("tcp", cfg.controlAddr)
-	if err != nil {
-		log.Error("control listener", "err", err)
-		return 1
-	}
+	served = true
 	go serveHTTP(log, "control", controlLn, srv.ControlHandler(cfg.controlAddr))
 
 	if err := machine.Set(boot, 0); err != nil {
