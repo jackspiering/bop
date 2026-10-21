@@ -188,9 +188,9 @@ cosign verify ghcr.io/jackspiering/bop:0.1.0 \
 | Tag | Meaning |
 |---|---|
 | `:0.1.0` | An immutable release. Pin this (or its digest) in tests. |
-| `:0.1` | The latest patch of a minor version. |
-| `:latest` | The newest stable release. |
-| `:edge` | Every push to `main`. Moves; `bop version` shows `edge-<sha>`. |
+| `:0.1` | The highest patch of a minor version. |
+| `:latest` | The highest stable release. |
+| `:edge` | The tip of `main`. Moves; `bop version` shows `edge-<sha>`. |
 | `:sha-<short>` | One specific commit on `main`, pushed by that commit's `main` build. Release tags do not touch it. |
 
 Pushing a `vX.Y.Z` tag on a commit that is on `main` runs the same CI, then
@@ -199,8 +199,13 @@ with generated notes. Tags like `v1.0.0-rc.1` publish only their exact version
 and mark the release as a pre-release. A release tag must be strict
 [SemVer](https://semver.org/), `vMAJOR.MINOR.PATCH` or
 `vMAJOR.MINOR.PATCH-PRERELEASE`, with no leading zeros and no `+build`
-metadata. The workflow refuses any other tag before it pushes anything. All tags are signed the same way, so the
-`cosign verify` command above works for any of them.
+metadata. The workflow refuses any other tag before it pushes anything.
+
+`:latest`, `:X.Y` and `:edge` only move forward: tagging an older version, or
+re-running an older workflow run, leaves them where they are.
+
+All tags are signed the same way, so the `cosign verify` command above works
+for any of them.
 
 ## Development
 

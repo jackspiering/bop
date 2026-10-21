@@ -3,6 +3,8 @@ name: Publish
 # main publishes :edge and :sha-<short>. A vX.Y.Z tag publishes :X.Y.Z, :X.Y
 # and :latest; a vX.Y.Z-PRERELEASE tag publishes only :X.Y.Z-PRERELEASE. Both
 # then create the GitHub Release. Any other tag fails before anything is pushed.
+# :latest, :X.Y and :edge only move forward: an older tag or a re-run of an
+# older commit leaves them where they are.
 on:
   push:
     branches: [main]
@@ -58,6 +60,15 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is not on main; refusing to publish a release from another branch"
             exit 1
           fi
+      - name: Decide which moving tags this run may update
+        id: channels
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            git fetch --force --tags origin # include tags pushed after checkout
+          else
+            git fetch --no-tags origin main
+          fi
+          .github/scripts/moving-tags.sh | tee -a "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -69,12 +80,15 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          # The default latest=auto would add :latest to every stable tag;
+          # the channels step decides it instead.
+          flavor: latest=false
           tags: |
-            type=edge,branch=main
+            type=edge,branch=main,enable=${{ steps.channels.outputs.edge == 'true' }}
             type=sha,prefix=sha-,format=short,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.channels.outputs.minor == 'true' }}
+            type=raw,value=latest,enable=${{ steps.channels.outputs.latest == 'true' }}
           labels: |
             org.opencontainers.image.title=bop
             org.opencontainers.image.description=Deliberately failing test image. Not for production.
