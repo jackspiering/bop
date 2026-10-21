@@ -44,8 +44,9 @@ func TestStoreInvalidFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("explode\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := (Store{Dir: dir}).Load(); err == nil || !strings.Contains(err.Error(), "bop clear") {
-		t.Fatalf("Load error = %v", err)
+	_, _, err := (Store{Dir: dir}).Load()
+	if err == nil || !strings.Contains(err.Error(), "recreate") || strings.Contains(err.Error(), "bop clear") {
+		t.Fatalf("Load error = %v, want a recreate remedy and no bop clear", err)
 	}
 }
 

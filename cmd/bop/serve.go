@@ -68,7 +68,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	boot := cfg.boot
 	switch stored, ok, err := cfg.store.Load(); {
 	case err != nil:
-		return usageError(stderr, "%v", err)
+		return bootError(stderr, err)
 	case ok:
 		log.Info("sticky mode overrides BOP_MODE", "sticky", stored.String(), "BOP_MODE", cfg.boot.String())
 		boot = stored
@@ -76,7 +76,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		if boot.Name == mode.Healthy {
 			boot.Sticky = false
 		} else if err := cfg.store.Save(boot); err != nil {
-			return usageError(stderr, "%v", err)
+			return bootError(stderr, err)
 		}
 	}
 
@@ -130,6 +130,13 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	}()
 
 	return handleSignals(log, cfg.sigterm, sigs)
+}
+
+// bootError reports a boot failure that is not a usage mistake, so the usage
+// text would only bury the remedy. It exits 2 like a configuration error.
+func bootError(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "bop: %v\n", err)
+	return 2
 }
 
 func serveHTTP(log *slog.Logger, name string, ln net.Listener, h http.Handler) {

@@ -21,12 +21,16 @@ func (s Store) Load() (Mode, bool, error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		return Mode{}, false, nil
 	}
+	// bop clear cannot help here: serve exits before the control listener
+	// binds, and distroless has no shell to delete the file with.
+	remedy := fmt.Sprintf("bop cannot start while it exists: recreate the container "+
+		"(docker rm, compose up --force-recreate), or delete the file if %s is a mounted volume", s.Dir)
 	if err != nil {
-		return Mode{}, false, fmt.Errorf("read sticky mode %s: %w", s.path(), err)
+		return Mode{}, false, fmt.Errorf("cannot read sticky mode file %s: %w; %s", s.path(), err, remedy)
 	}
 	m, err := Parse(strings.TrimSpace(string(b)))
 	if err != nil {
-		return Mode{}, false, fmt.Errorf("sticky mode file %s is invalid (remove it or run `bop clear`): %w", s.path(), err)
+		return Mode{}, false, fmt.Errorf("sticky mode file %s is invalid: %w; %s", s.path(), err, remedy)
 	}
 	m.Sticky = true
 	return m, true, nil
