@@ -186,6 +186,8 @@ func TestControlRejections(t *testing.T) {
 		{"crash exit=999", "0 to 255"},
 		{"crash-loop", "sticky=true"},
 		{"oom", "no memory limit"},
+		// A persisted oom would exit 2 on every restart.
+		{"oom sticky=true", "no memory limit"},
 		{"", "empty mode"},
 	}
 	for _, tt := range tests {
@@ -194,12 +196,12 @@ func TestControlRejections(t *testing.T) {
 		if !errors.As(err, &ae) || ae.Status != http.StatusBadRequest || !strings.Contains(ae.Message, tt.want) {
 			t.Errorf("Set(%q) = %v, want 400 containing %q", tt.spec, err, tt.want)
 		}
+		if _, ok, _ := h.store.Load(); ok {
+			t.Fatalf("Set(%q) persisted a rejected command", tt.spec)
+		}
 	}
 	if got, _ := h.client.Status(context.Background()); got.Mode != "healthy" {
 		t.Fatalf("rejected commands changed the mode to %q", got.Mode)
-	}
-	if _, ok, _ := h.store.Load(); ok {
-		t.Fatal("rejected command was persisted")
 	}
 }
 
