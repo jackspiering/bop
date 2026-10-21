@@ -68,9 +68,14 @@ a runtime switch.
 | `bop` / `bop serve` | The main process. |
 | `bop status` | Print the running process's state. |
 | `bop clear` | Back to `healthy` and remove the sticky mode. |
-| `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, else 1. Default `http://127.0.0.1:<port of BOP_ADDR>/healthz`, 1.5s timeout. |
+| `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, else 1. Default `http://127.0.0.1:<port of BOP_ADDR>/healthz`, 1.5s timeout. Probes go direct (see below). |
 | `bop sidecar --target=URL [--interval=2s]` | See [Sidecar](#sidecar). |
 | `bop version` | |
+
+The probes (`bop healthcheck`, `bop sidecar`) and the CLI's control client go
+direct to the URL they are given: they ignore `HTTP_PROXY`, `HTTPS_PROXY` and
+`NO_PROXY`, and they do not follow redirects, so a `3xx` counts as a failure.
+A proxy's own error or a redirect is never mistaken for the target's state.
 
 ### Knobs (environment, boot only)
 
@@ -145,7 +150,9 @@ docker rm -f bop && docker run ...      # healthy again
 
 `bop sidecar --target=http://127.0.0.1:8080` binds nothing. It idles, handles
 signals, polls the target's `/info` (a bare URL gets `/info` appended) and logs
-when the target becomes unreachable or its `instance_id` changes.
+when the target becomes unreachable or its `instance_id` changes. It polls the
+target directly, ignoring `HTTP(S)_PROXY`, and treats a redirect as
+unreachable.
 
 In a sidecar on `network_mode: service:<parent>` (or `container:`), its
 healthcheck is `bop healthcheck --url=http://127.0.0.1:8080/info`, which proves

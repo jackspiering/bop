@@ -62,7 +62,7 @@ func newHarness(t *testing.T, hooks mode.Hooks) *harness {
 	h.control = httptest.NewServer(h.srv.ControlHandler("127.0.0.1:9901"))
 	t.Cleanup(h.data.Close)
 	t.Cleanup(h.control.Close)
-	h.client = NewClient(strings.TrimPrefix(h.control.URL, "http://"))
+	h.client = NewClient(strings.TrimPrefix(h.control.URL, "http://"), &http.Client{Timeout: 5 * time.Second})
 	return h
 }
 
@@ -575,7 +575,7 @@ func TestStickyWriteFailureIsReported(t *testing.T) {
 }
 
 func TestClientUnreachable(t *testing.T) {
-	c := NewClient("127.0.0.1:1")
+	c := NewClient("127.0.0.1:1", http.DefaultClient)
 	if _, err := c.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "control listener") {
 		t.Fatalf("err = %v", err)
 	}
@@ -588,7 +588,7 @@ func TestNewClientWildcardHost(t *testing.T) {
 		"[::]:9901":      "http://127.0.0.1:9901",
 		"127.0.0.1:9901": "http://127.0.0.1:9901",
 	} {
-		if got := NewClient(in).base; got != want {
+		if got := NewClient(in, nil).base; got != want {
 			t.Errorf("NewClient(%q).base = %q, want %q", in, got, want)
 		}
 	}

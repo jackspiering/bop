@@ -1126,6 +1126,31 @@ func TestSidecarLogsInstanceIDChange(t *testing.T) {
 	})
 }
 
+// TestProbesIgnoreProxy: the sidecar and healthcheck probe the target
+// directly, even when HTTP_PROXY points at nothing.
+func TestProbesIgnoreProxy(t *testing.T) {
+	t.Parallel()
+	netName := uniqueName(t)
+	mustDocker(t, "network", "create", netName)
+	t.Cleanup(func() { _, _ = dockerCtx(time.Minute, "network", "rm", netName) })
+
+	parent := run(t, "--network", netName, "--network-alias", "parent", image)
+	waitHealth(t, parent, "healthy", 30*time.Second)
+	sidecar := run(t, "--network", netName, "-e", "HTTP_PROXY=http://127.0.0.1:9", "-e", "http_proxy=http://127.0.0.1:9",
+		"--no-healthcheck", image, "sidecar", "--target=http://parent:8080", "--interval=300ms")
+	waitFor(t, sidecar, 20*time.Second, "target reachable", func() bool {
+		return strings.Contains(logs(sidecar), "target reachable")
+	})
+	if l := logs(sidecar); strings.Contains(l, "target unreachable") {
+		t.Fatalf("sidecar went through the proxy:\n%s", l)
+	}
+	// docker exec inherits the container's HTTP_PROXY.
+	code, out := execCode(t, sidecar, "bop", "healthcheck", "--url=http://parent:8080/healthz")
+	if code != 0 {
+		t.Fatalf("healthcheck through HTTP_PROXY = %d: %s", code, out)
+	}
+}
+
 func TestExamplesComposeConfig(t *testing.T) {
 	t.Parallel()
 	root, err := repoRoot()

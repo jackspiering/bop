@@ -104,7 +104,7 @@ func sidecar(args []string, stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	log.Info("sidecar starting", "version", version, "target", u, "interval", interval.String())
 
-	client := &http.Client{Timeout: healthcheckTimeout}
+	client := newProbeClient(healthcheckTimeout)
 	w := &watcher{log: log, target: u}
 	t := time.NewTicker(*interval)
 	defer t.Stop()

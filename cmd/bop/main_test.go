@@ -608,3 +608,51 @@ func TestBootMode(t *testing.T) {
 		t.Error("bootMode with an unwritable state dir succeeded")
 	}
 }
+
+// redirectingServer returns a server that redirects every request to a
+// server that answers 200.
+func redirectingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"instance_id":"abc"}`))
+	}))
+	t.Cleanup(target.Close)
+	redir := httptest.NewServer(http.RedirectHandler(target.URL+"/info", http.StatusFound))
+	t.Cleanup(redir.Close)
+	return redir
+}
+
+func TestHealthcheckDoesNotFollowRedirects(t *testing.T) {
+	ts := redirectingServer(t)
+	var errb bytes.Buffer
+	if code := healthcheck([]string{"--url=" + ts.URL}, &errb, env(nil)); code != 1 {
+		t.Fatalf("302 -> %d, want 1 (stderr %q)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "302") {
+		t.Errorf("stderr should name the 302: %q", errb.String())
+	}
+}
+
+func TestPollDoesNotFollowRedirects(t *testing.T) {
+	ts := redirectingServer(t)
+	if id, err := poll(context.Background(), newProbeClient(time.Second), ts.URL+"/info"); err == nil {
+		t.Fatalf("poll followed the redirect: id %q", id)
+	}
+}
+
+func TestProbeClientIgnoresProxyEnvironment(t *testing.T) {
+	c := newProbeClient(time.Second)
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", c.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Fatal("probe transport must not use a proxy")
+	}
+	if tr == http.DefaultTransport {
+		t.Fatal("probe transport must be a clone, not http.DefaultTransport")
+	}
+	if c.Timeout != time.Second {
+		t.Fatalf("Timeout = %s", c.Timeout)
+	}
+}

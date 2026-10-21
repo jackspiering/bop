@@ -107,7 +107,7 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 	if err != nil {
 		return usageError(stderr, "%v", err)
 	}
-	client := server.NewClient(addr)
+	client := server.NewClient(addr, newProbeClient(5*time.Second))
 	var st server.State
 	if spec == "" {
 		st, err = client.Status(ctx)

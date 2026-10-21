@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"time"
 )
 
 // APIError is an error response from the control listener.
@@ -24,19 +23,19 @@ type Client struct {
 	http *http.Client
 }
 
-// NewClient returns a client for the control address (BOP_CONTROL_ADDR).
-// An empty or wildcard host is dialled as 127.0.0.1.
-func NewClient(addr string) *Client {
+// NewClient returns a client for the control address (BOP_CONTROL_ADDR) that
+// sends its requests with hc. An empty or wildcard host is dialled as 127.0.0.1.
+func NewClient(addr string, hc *http.Client) *Client {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return &Client{base: "http://" + addr, http: &http.Client{Timeout: 5 * time.Second}}
+		return &Client{base: "http://" + addr, http: hc}
 	}
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
 	}
 	return &Client{
 		base: "http://" + net.JoinHostPort(host, port),
-		http: &http.Client{Timeout: 5 * time.Second},
+		http: hc,
 	}
 }
 
