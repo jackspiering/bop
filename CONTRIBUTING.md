@@ -30,5 +30,10 @@ Engine 25.0 or later (for `--start-interval`), Docker Compose v2 and cgroup v2
 
 A maintainer pushes a `vX.Y.Z` (or `vX.Y.Z-rc.N`) tag on a commit that is on
 `main`; the publish workflow does the rest. Tags must be strict SemVer with no
-`+build` metadata, or the workflow refuses them. Release notes are generated from merged pull requests,
-so there is no separate changelog.
+`+build` metadata, or the workflow refuses them. Release notes are generated
+from merged pull requests, so there is no separate changelog.
+
+A version can be published only once. If a release run fails, re-run it from
+the Actions tab instead of deleting and re-pushing the tag: once `:X.Y.Z`
+exists, a re-run reuses its digest instead of rebuilding. If a release is
+wrong, cut a new version.

@@ -75,6 +75,29 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # :X.Y.Z is immutable. A first attempt on an existing version (a deleted
+      # and re-pushed tag) fails before anything is pushed. A re-run reuses the
+      # existing digest instead of rebuilding, so the tags keep their digest.
+      - name: Do not rebuild an existing release
+        id: existing
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          ref="${IMAGE}:${GITHUB_REF_NAME#v}"
+          if out="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>&1)"; then
+            if ! [[ $out =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::cannot read the digest of $ref: $out"
+              exit 1
+            fi
+            if [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
+              echo "::error::$ref already exists ($out); release tags are immutable, cut a new version"
+              exit 1
+            fi
+            echo "::notice::$ref already exists; re-signing and re-tagging $out instead of rebuilding"
+            echo "digest=$out" >> "$GITHUB_OUTPUT"
+          elif ! printf '%s\n' "$out" | grep -qF "$ref: not found"; then
+            echo "::error::cannot check $ref: $out"
+            exit 1
+          fi
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -116,6 +139,7 @@ jobs:
       # verified ("Tag the verified digest" below).
       - name: Build and push
         id: build
+        if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -129,15 +153,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - name: Sign the pushed digest
+      - name: Sign the digest
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
       # Run the README's strict verify command on every publish, so a change
       # to the workflow name or triggers cannot silently break it.
       - name: Verify the signature
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
         run: |
           cosign verify "${IMAGE}@${DIGEST}" \
             --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
@@ -146,7 +170,7 @@ jobs:
       # glob allows arbitrary suffixes.
       - name: Tag the verified digest
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           args=()
@@ -176,6 +200,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::release $GITHUB_REF_NAME already exists (re-run); leaving it as is"
+            exit 0
+          fi
           image_ref="${IMAGE}:${GITHUB_REF_NAME#v}"
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac

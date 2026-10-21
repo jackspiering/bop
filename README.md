@@ -201,6 +201,10 @@ and mark the release as a pre-release. A release tag must be strict
 `vMAJOR.MINOR.PATCH-PRERELEASE`, with no leading zeros and no `+build`
 metadata. The workflow refuses any other tag before it pushes anything.
 
+`:X.Y.Z` never changes once published. The workflow refuses to publish a
+version that already exists in the registry. A re-run of a release run ("Re-run
+all jobs" or "Re-run failed jobs") is safe: it reuses the published digest
+instead of rebuilding, and skips a GitHub Release that already exists.
 `:latest`, `:X.Y` and `:edge` only move forward: tagging an older version, or
 re-running an older workflow run, leaves them where they are.
 
