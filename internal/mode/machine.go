@@ -7,7 +7,9 @@ import (
 
 // Hooks are the side effects the machine triggers. All are optional.
 type Hooks struct {
-	// Exit terminates the process with code.
+	// Exit terminates the process with code. It runs with the machine locked,
+	// so a concurrent Set either cancels the exit or does not return before
+	// Exit does. It must not call Machine methods.
 	Exit func(code int)
 	// OOM starts allocating memory at rate MiB/s until stop is closed.
 	OOM func(rate int, stop <-chan struct{})
@@ -82,9 +84,9 @@ func (mc *Machine) Set(m Mode, minDelay time.Duration) error {
 
 	switch m.Name {
 	case Crash:
-		mc.schedule(gen, max(m.After, minDelay), func() { mc.exit(m.Exit) })
+		mc.scheduleExit(gen, max(m.After, minDelay), m.Exit)
 	case CrashLoop:
-		mc.schedule(gen, max(m.Interval, minDelay), func() { mc.exit(m.Exit) })
+		mc.scheduleExit(gen, max(m.Interval, minDelay), m.Exit)
 	case Unhealthy:
 		if m.After > 0 {
 			mc.schedule(gen, m.After, func() {
@@ -122,10 +124,17 @@ func (mc *Machine) schedule(gen uint64, d time.Duration, fn func()) {
 	})
 }
 
-func (mc *Machine) exit(code int) {
-	if mc.hooks.Exit != nil {
-		mc.hooks.Exit(code)
-	}
+// scheduleExit must be called with mu held. The gen check and the exit both
+// happen under mu, so a concurrent Set either cancels the exit or does not
+// return before the exit hook does (in production, never).
+func (mc *Machine) scheduleExit(gen uint64, d time.Duration, code int) {
+	mc.timer = time.AfterFunc(d, func() {
+		mc.mu.Lock()
+		defer mc.mu.Unlock()
+		if mc.gen == gen && mc.hooks.Exit != nil {
+			mc.hooks.Exit(code)
+		}
+	})
 }
 
 // Snapshot returns the current state.

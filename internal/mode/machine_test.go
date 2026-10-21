@@ -133,6 +133,49 @@ func TestMachineSwitchCancelsPendingCrash(t *testing.T) {
 	}
 }
 
+// Once a scheduled exit has passed its staleness check, a switch must not be
+// acknowledged before the exit hook returns (in production it never does).
+func TestMachineSwitchCannotOvertakeCommittedExit(t *testing.T) {
+	for _, m := range []Mode{
+		{Name: Crash, Exit: 3},
+		{Name: CrashLoop, Exit: 3, Interval: time.Millisecond},
+	} {
+		t.Run(string(m.Name), func(t *testing.T) {
+			var mc *Machine
+			setDone := make(chan struct{})
+			overtaken := make(chan bool, 1)
+			mc = NewMachine(Hooks{Exit: func(int) {
+				go func() {
+					_ = mc.Set(Mode{Name: Healthy}, 0)
+					close(setDone)
+				}()
+				select {
+				case <-setDone:
+					overtaken <- true
+				case <-time.After(50 * time.Millisecond):
+					overtaken <- false
+				}
+			}})
+			if err := mc.Set(m, 0); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case o := <-overtaken:
+				if o {
+					t.Fatal("Set(healthy) returned after the exit had committed")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("exit did not fire")
+			}
+			select {
+			case <-setDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Set(healthy) still blocked after the exit hook returned")
+			}
+		})
+	}
+}
+
 func TestMachineCrashLoopUsesInterval(t *testing.T) {
 	tests := []struct {
 		interval, minDelay, want time.Duration
