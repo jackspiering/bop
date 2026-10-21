@@ -209,13 +209,26 @@ func TestHandleSignals(t *testing.T) {
 		t.Fatalf("exit:7 -> %d", code)
 	}
 
-	// delay exits 0 only after the delay, and further signals do not restart it.
+	// delay exits 0 once the delay has passed, measured from the first signal:
+	// a later signal neither restarts the timer nor exits early.
+	const delay = 500 * time.Millisecond
+	sigs := send(1)
 	start := time.Now()
-	if code := handleSignals(log, mode.Sigterm{Kind: mode.SigtermDelay, Delay: 150 * time.Millisecond}, send(3)); code != 0 {
-		t.Fatalf("delay -> %d", code)
+	delayed := make(chan int, 1)
+	go func() { delayed <- handleSignals(log, mode.Sigterm{Kind: mode.SigtermDelay, Delay: delay}, sigs) }()
+	time.Sleep(350 * time.Millisecond)
+	sigs <- syscall.SIGINT
+	select {
+	case code := <-delayed:
+		if code != 0 {
+			t.Fatalf("delay -> %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("delay never exited")
 	}
-	if time.Since(start) < 150*time.Millisecond {
-		t.Fatal("delay exited early")
+	// A timer restarted by the second signal would return at about 850ms.
+	if d := time.Since(start); d < delay || d > delay+250*time.Millisecond {
+		t.Fatalf("delay exited after %s, want %s from the first signal", d, delay)
 	}
 
 	// ignore never returns.

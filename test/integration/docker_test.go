@@ -534,6 +534,54 @@ func TestSigtermDelay(t *testing.T) {
 	}
 }
 
+func TestSigintFollowsPolicy(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(env("BOP_ON_SIGTERM", "exit:7"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustDocker(t, "kill", "-s", "INT", c)
+	waitExited(t, c, 10*time.Second)
+	if got := exitCode(t, c); got != 7 {
+		t.Fatalf("exit code after SIGINT = %d, want 7", got)
+	}
+}
+
+func TestSigtermDuringStartDelay(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(env("BOP_START_DELAY", "60s"), env("BOP_ON_SIGTERM", "exit:5"), []string{image})...)
+	waitFor(t, c, 20*time.Second, "control listener", func() bool {
+		code, _ := execCode(t, c, "bop", "status")
+		return code == 0
+	})
+	if code, out := execCode(t, c, "bop", "healthcheck"); code != 1 {
+		t.Fatalf("healthcheck during the start delay = %d, want 1\n%s", code, out)
+	}
+	if d := stop(t, c, 20); d > 10*time.Second {
+		t.Fatalf("docker stop took %s", d)
+	}
+	if got := exitCode(t, c); got != 5 {
+		t.Fatalf("exit code = %d, want 5", got)
+	}
+}
+
+func TestSidecarStopExits0(t *testing.T) {
+	t.Parallel()
+	c := run(t, image, "sidecar", "--target=http://127.0.0.1:1", "--interval=200ms")
+	// Not "sidecar starting": it is the first poll's result that proves the
+	// sidecar is past startup.
+	waitFor(t, c, 20*time.Second, "target unreachable", func() bool {
+		return strings.Contains(logs(c), "target unreachable")
+	})
+	if d := stop(t, c, 20); d > 5*time.Second {
+		t.Fatalf("docker stop took %s", d)
+	}
+	if got := exitCode(t, c); got != 0 {
+		t.Fatalf("exit code = %d, want 0", got)
+	}
+	if l := logs(c); !strings.Contains(l, "sidecar stopping") {
+		t.Fatalf("no 'sidecar stopping' log:\n%s", l)
+	}
+}
+
 func TestSticky(t *testing.T) {
 	t.Parallel()
 	name := uniqueName(t)
