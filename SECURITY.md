@@ -24,4 +24,20 @@ open a public issue for it.
 ## Verifying images
 
 Release and `:edge` images are signed with keyless cosign and carry an SBOM and
-provenance. See "Image" in the [README](README.md) for the `cosign verify` command.
+provenance. See "Image" in the [README](README.md) for the `cosign verify`
+command.
+
+The strict identity in the README proves that `publish.yml` in this repository
+signed the image while running on `main` or on a `vX.Y.Z[-PRERELEASE]` tag.
+That is only as strong as the rules on those refs:
+
+- A tag ruleset on `refs/tags/v*` restricts creating, moving and deleting
+  release tags to repository admins.
+- `main` is protected: changes land through pull requests that pass CI, with
+  no force pushes or deletions.
+- The publish workflow refuses tags that are not on `main` or not strict
+  SemVer, refuses to republish an existing version, and only moves a tag to a
+  digest after signing and verifying it.
+
+A signature does not name the commit. To check what a release contains, compare
+the `org.opencontainers.image.revision` label, or the provenance, with the tag.

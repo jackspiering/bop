@@ -23,11 +23,27 @@ Engine 25.0 or later (for `--start-interval`), Docker Compose v2 and cgroup v2
   an `examples/<name>/compose.yaml` that `TestExamplesRun` brings up.
 - Pin GitHub Actions to a full commit SHA with the version as a trailing
   comment, and base images by digest. Dependabot keeps both current.
+- The build tools are pinned by digest by hand, because Dependabot does not
+  track them: the BuildKit daemon (`driver-opts: image=moby/buildkit:...` on
+  every `setup-buildx-action`, the same reference in `ci.yml` and
+  `publish.yml`) and the SBOM scanner
+  (`sbom: generator=docker/buildkit-syft-scanner:...` in `publish.yml`). To
+  bump one, pick a release tag, run `docker buildx imagetools inspect
+  <image>:<tag>` and pin `<image>:<tag>@sha256:<index digest>`.
+  `go test ./test/release/` fails if either is unpinned. Do not add a
+  `# syntax=` line to the Dockerfile: the pinned daemon's built-in frontend
+  is used.
 - Workflows default to `permissions: contents: read`; widen per job only.
 - Open a pull request against `main`. The four CI checks must pass.
 
 ## Releases
 
-A maintainer pushes a `vX.Y.Z` tag on a commit that is on `main`; the publish
-workflow does the rest. Release notes are generated from merged pull requests,
-so there is no separate changelog.
+A maintainer pushes a `vX.Y.Z` (or `vX.Y.Z-rc.N`) tag on a commit that is on
+`main`; the publish workflow does the rest. Tags must be strict SemVer with no
+`+build` metadata, or the workflow refuses them. Release notes are generated
+from merged pull requests, so there is no separate changelog.
+
+A version can be published only once. If a release run fails, re-run it from
+the Actions tab instead of deleting and re-pushing the tag: once `:X.Y.Z`
+exists, a re-run reuses its digest instead of rebuilding. If a release is
+wrong, cut a new version.

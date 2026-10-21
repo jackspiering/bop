@@ -179,25 +179,46 @@ form (CI runs it against every image it publishes):
 
 ```sh
 cosign verify ghcr.io/jackspiering/bop:0.1.0 \
-  --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+  --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+What the strict form proves: the image was signed by `publish.yml` in this
+repository, running either on `main` or on a `vX.Y.Z[-PRERELEASE]` tag. It
+does not name a commit. It relies on two repository settings: a tag ruleset
+lets only repository admins create, move or delete `v*` tags, and `main` only
+changes through pull requests that pass CI (see "Maintainer: one-time steps").
+The workflow also refuses to publish a tag that is not on `main`.
 
 ## Releases
 
 | Tag | Meaning |
 |---|---|
 | `:0.1.0` | An immutable release. Pin this (or its digest) in tests. |
-| `:0.1` | The latest patch of a minor version. |
-| `:latest` | The newest stable release. |
-| `:edge` | Every push to `main`. Moves; `bop version` shows `edge-<sha>`. |
-| `:sha-<short>` | One specific commit on `main`. |
+| `:0.1` | The highest patch of a minor version. |
+| `:latest` | The highest stable release. |
+| `:edge` | The tip of `main`. Moves; `bop version` shows `edge-<sha>`. |
+| `:sha-<short>` | One specific commit on `main`, pushed by that commit's `main` build. Release tags do not touch it. |
 
 Pushing a `vX.Y.Z` tag on a commit that is on `main` runs the same CI, then
 publishes the versioned tags, signs the digest and creates the GitHub Release
 with generated notes. Tags like `v1.0.0-rc.1` publish only their exact version
-and mark the release as a pre-release. All tags are signed the same way, so the
-`cosign verify` command above works for any of them.
+and mark the release as a pre-release. A release tag must be strict
+[SemVer](https://semver.org/), `vMAJOR.MINOR.PATCH` or
+`vMAJOR.MINOR.PATCH-PRERELEASE`, with no leading zeros and no `+build`
+metadata. The workflow refuses any other tag before it pushes anything.
+
+`:X.Y.Z` never changes once published. The workflow refuses to publish a
+version that already exists in the registry, and the tag ruleset stops a
+release tag from being moved or deleted. A re-run of a release run ("Re-run
+all jobs" or "Re-run failed jobs") is safe: it reuses the published digest
+instead of rebuilding, and skips a GitHub Release that already exists.
+`:latest`, `:X.Y` and `:edge` only move forward: tagging an older version, or
+re-running an older workflow run, leaves them where they are.
+
+All tags are signed the same way, so the `cosign verify` command above works
+for any of them. The image is pushed by digest first, and a tag only moves to
+that digest after it is signed and the strict `cosign verify` passes.
 
 ## Development
 
@@ -212,9 +233,20 @@ count). They need Docker Engine 25.0+ and cgroup v2.
 
 ## Maintainer: one-time steps
 
-After the first publish on `main`, set the ghcr package visibility to **Public**
-in the package settings (github.com → your profile → Packages → `bop` →
-Package settings), and confirm the package is linked to this repository.
+- After the first publish on `main`, set the ghcr package visibility to
+  **Public** in the package settings (github.com → your profile → Packages →
+  `bop` → Package settings), and confirm the package is linked to this
+  repository.
+- Add a tag ruleset (Settings → Rules → Rulesets → New tag ruleset): target
+  `refs/tags/v*`, enforcement **Active**, with **Restrict creations**,
+  **Restrict updates**, **Restrict deletions** and **Block force pushes**, and
+  only the Repository admin role on the bypass list. Only admins can then
+  create release tags, and a published `vX.Y.Z` cannot be moved or deleted.
+  Check it with `gh api repos/jackspiering/bop/rulesets`.
+- Protect `main` (Settings → Branches): require a pull request, require the
+  four CI checks (`Lint and unit tests`, `Docker build`,
+  `Integration (ubuntu-24.04)`, `Integration (ubuntu-24.04-arm)`), and allow
+  no force pushes or deletions.
 
 ## Prior art
 
