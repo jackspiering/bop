@@ -129,3 +129,65 @@ func TestStoreSavePermissionDeniedHasNoReadOnlyHint(t *testing.T) {
 		}
 	}
 }
+
+// stubSync replaces syncFile and syncDir for one test.
+func stubSync(t *testing.T, file func(*os.File) error, dir func(string) error) {
+	t.Helper()
+	origFile, origDir := syncFile, syncDir
+	syncFile, syncDir = file, dir
+	t.Cleanup(func() { syncFile, syncDir = origFile, origDir })
+}
+
+func TestStoreSaveSyncsBeforeAndAfterRename(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	var calls []string
+	stubSync(t,
+		func(f *os.File) error {
+			if _, err := os.Stat(s.path()); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("mode published before the file sync: %v", err)
+			}
+			calls = append(calls, "file")
+			return f.Sync()
+		},
+		func(dir string) error {
+			if dir != s.Dir {
+				t.Errorf("synced dir %q, want %q", dir, s.Dir)
+			}
+			if b, err := os.ReadFile(s.path()); err != nil || string(b) != "hang sticky=true\n" {
+				t.Errorf("at dir sync, mode = %q, %v", b, err)
+			}
+			calls = append(calls, "dir")
+			return nil
+		})
+	if err := s.Save(Mode{Name: Hang}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(calls, ",") != "file,dir" {
+		t.Fatalf("sync calls = %v, want [file dir]", calls)
+	}
+}
+
+func TestStoreSaveFileSyncError(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	stubSync(t, func(*os.File) error { return syscall.EIO }, func(string) error { return nil })
+	if err := s.Save(Mode{Name: Hang}); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("Save = %v, want EIO", err)
+	}
+	if _, ok, err := s.Load(); ok || err != nil {
+		t.Fatalf("a failed sync published a mode: %v, %v", ok, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(s.Dir, ".mode-*")); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+}
+
+func TestStoreSaveDirSyncErrorIgnored(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	stubSync(t, (*os.File).Sync, func(string) error { return syscall.EINVAL })
+	if err := s.Save(Mode{Name: Hang}); err != nil {
+		t.Fatalf("Save = %v, want nil: the mode is already in place", err)
+	}
+	if m, ok, err := s.Load(); !ok || err != nil || m.Name != Hang {
+		t.Fatalf("Load = %+v, %v, %v", m, ok, err)
+	}
+}

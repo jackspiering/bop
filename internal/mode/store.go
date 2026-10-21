@@ -51,14 +51,36 @@ func (s Store) Save(m Mode) error {
 		tmp.Close()
 		return explainSaveError(s.Dir, err)
 	}
+	// Without this, a host crash after the rename can leave an empty mode
+	// file, and serve then exits 2 on every start.
+	if err := syncFile(tmp); err != nil {
+		tmp.Close()
+		return explainSaveError(s.Dir, err)
+	}
 	if err := tmp.Close(); err != nil {
 		return explainSaveError(s.Dir, err)
 	}
 	if err := os.Rename(tmp.Name(), s.path()); err != nil {
 		return explainSaveError(s.Dir, err)
 	}
+	// Best effort: the mode is already in place, and some filesystems
+	// return EINVAL for a directory fsync.
+	_ = syncDir(s.Dir)
 	return nil
 }
+
+// syncFile and syncDir are replaceable in tests.
+var (
+	syncFile = (*os.File).Sync
+	syncDir  = func(dir string) error {
+		d, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		defer d.Close()
+		return d.Sync()
+	}
+)
 
 // explainSaveError wraps a Save failure and, for the two causes a user can
 // act on, says what to change. errors.Is still sees the original errno.
