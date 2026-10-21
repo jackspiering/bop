@@ -57,6 +57,13 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		return usageError(stderr, "%v", err)
 	}
 
+	// bop cannot tell a tmpfs (emptied on every restart) from a volume or an
+	// emptyDir (which outlive the container), so it only warns.
+	if own, err := cfg.store.OnOwnMount(); err == nil && own {
+		log.Warn("BOP_STATE_DIR is on its own mount: a sticky mode lasts exactly as long as that mount "+
+			"(a tmpfs is emptied on every restart, a volume survives a recreate)", "dir", cfg.store.Dir)
+	}
+
 	// A sticky file overrides BOP_MODE; BOP_MODE with sticky=true creates it.
 	boot := cfg.boot
 	switch stored, ok, err := cfg.store.Load(); {

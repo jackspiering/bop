@@ -578,6 +578,40 @@ func TestStickyOnReadOnlyRootFails(t *testing.T) {
 	waitHealth(t, c, "unhealthy", 30*time.Second)
 }
 
+// ownMountWarning is logged at boot when BOP_STATE_DIR is not on the root
+// filesystem, so a sticky mode lasts as long as that mount, not the container.
+const ownMountWarning = "BOP_STATE_DIR is on its own mount"
+
+func TestStickyOnTmpfsIsLostOnRestart(t *testing.T) {
+	t.Parallel()
+	// The usual read-only hardening puts a tmpfs on /tmp: sticky writes
+	// succeed, but the tmpfs is emptied on every restart.
+	c := run(t, cat(fastHealth, []string{"--read-only", "--tmpfs", "/tmp"}, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if !strings.Contains(logs(c), ownMountWarning) {
+		t.Fatalf("no %q warning at boot:\n%s", ownMountWarning, logs(c))
+	}
+	if out := mustExec(t, c, "bop", "unhealthy", "sticky=true"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      false") {
+		t.Fatalf("status:\n%s", out)
+	}
+}
+
+func TestNoOwnMountWarningByDefault(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if l := logs(c); strings.Contains(l, ownMountWarning) {
+		t.Fatalf("unexpected warning on the writable layer:\n%s", l)
+	}
+}
+
 func TestClearOnReadOnlyRoot(t *testing.T) {
 	t.Parallel()
 	// Linux returns EROFS, not ENOENT, when removing a missing name on a

@@ -36,7 +36,8 @@ Modes:
   crash-loop  [interval=<dur>] [exit=<code>]    boot mode or sticky=true only
   oom         [rate=<MiB/s>]                    needs a memory limit
   hang
-Every mode accepts sticky=true (survives docker restart, not a recreate).
+Every mode accepts sticky=true: it lasts as long as BOP_STATE_DIR (by default
+the writable layer: survives docker restart, not a recreate).
 
 Environment (boot only):
   BOP_MODE         initial mode, same grammar (default healthy)
