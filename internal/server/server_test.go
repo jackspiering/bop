@@ -58,7 +58,7 @@ func newHarness(t *testing.T, hooks mode.Hooks) *harness {
 	h.data = httptest.NewUnstartedServer(h.srv.DataHandler())
 	h.data.Config.ErrorLog = log.New(h.dataLog, "", 0)
 	h.data.Start()
-	h.control = httptest.NewServer(h.srv.ControlHandler())
+	h.control = httptest.NewServer(h.srv.ControlHandler("127.0.0.1:9901"))
 	t.Cleanup(h.data.Close)
 	t.Cleanup(h.control.Close)
 	h.client = NewClient(strings.TrimPrefix(h.control.URL, "http://"))
@@ -266,6 +266,157 @@ func TestControlRejections(t *testing.T) {
 	}
 	if _, ok, _ := h.store.Load(); ok {
 		t.Fatal("rejected command was persisted")
+	}
+}
+
+func TestControlRejectsBrowserRequests(t *testing.T) {
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		host    string
+		headers map[string]string
+		body    string
+		sticky  bool
+		want    int
+	}{
+		{
+			name:   "cross-site text/plain POST",
+			method: http.MethodPost, path: "/mode",
+			headers: map[string]string{"Content-Type": "text/plain;charset=UTF-8", "Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+			body:    `{"mode":"unhealthy"}`,
+			want:    http.StatusForbidden,
+		},
+		{
+			name:   "DNS rebinding POST",
+			method: http.MethodPost, path: "/mode", host: "evil.example:9901",
+			headers: map[string]string{"Content-Type": "application/json", "Origin": "http://evil.example:9901"},
+			body:    `{"mode":"unhealthy"}`,
+			want:    http.StatusForbidden,
+		},
+		{
+			name:   "cross-site POST /clear",
+			method: http.MethodPost, path: "/clear", sticky: true,
+			headers: map[string]string{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+			want:    http.StatusForbidden,
+		},
+		{
+			name:   "text/plain POST without Origin",
+			method: http.MethodPost, path: "/mode",
+			headers: map[string]string{"Content-Type": "text/plain"},
+			body:    `{"mode":"unhealthy"}`,
+			want:    http.StatusUnsupportedMediaType,
+		},
+		{
+			name:   "DNS rebinding GET /status",
+			method: http.MethodGet, path: "/status", host: "evil.example:9901",
+			want: http.StatusForbidden,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, mode.Hooks{})
+			ctx := context.Background()
+			wantMode := "healthy"
+			if tt.sticky {
+				st, err := h.client.Set(ctx, "unhealthy sticky=true")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantMode = st.Mode
+			}
+			req, err := http.NewRequestWithContext(ctx, tt.method, h.control.URL+tt.path, strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.host != "" {
+				req.Host = tt.host
+			}
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("status = %d %s, want %d", resp.StatusCode, strings.TrimSpace(string(b)), tt.want)
+			}
+			if got, err := h.client.Status(ctx); err != nil || got.Mode != wantMode {
+				t.Errorf("mode = %q (%v), want %q", got.Mode, err, wantMode)
+			}
+			if _, ok, _ := h.store.Load(); ok != tt.sticky {
+				t.Errorf("sticky file present = %v, want %v", ok, tt.sticky)
+			}
+		})
+	}
+	// The CLI still works.
+	h := newHarness(t, mode.Hooks{})
+	if _, err := h.client.Set(context.Background(), "unhealthy"); err != nil {
+		t.Fatalf("CLI request rejected: %v", err)
+	}
+}
+
+func TestControlAcceptsCLIHosts(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	control := httptest.NewServer(h.srv.ControlHandler("Bop.Internal:9902"))
+	t.Cleanup(control.Close)
+	for host, want := range map[string]int{
+		"127.0.0.1:9902":      http.StatusOK,
+		"[::1]:9902":          http.StatusOK,
+		"localhost:9902":      http.StatusOK,
+		"bop.internal:9902":   http.StatusOK,
+		"bop.internal":        http.StatusOK,
+		"other.example:9902":  http.StatusForbidden,
+		"localhost.evil:9902": http.StatusForbidden,
+	} {
+		req, err := http.NewRequest(http.MethodGet, control.URL+"/status", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("Host %q: status = %d, want %d", host, resp.StatusCode, want)
+		}
+	}
+}
+
+func TestControlClearIsOnlyAMode(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	ctx := context.Background()
+	if _, err := h.client.Set(ctx, "unhealthy sticky=true"); err != nil {
+		t.Fatal(err)
+	}
+	// Shaped like a CLI request, so only the route decides the answer.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.control.URL+"/clear", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /clear = %d, want 404", resp.StatusCode)
+	}
+	if _, ok, _ := h.store.Load(); !ok {
+		t.Fatal("POST /clear removed the sticky file")
+	}
+	st, err := h.client.Set(ctx, "clear")
+	if err != nil || st.Mode != "healthy" {
+		t.Fatalf("clear: %+v %v", st, err)
+	}
+	if _, ok, _ := h.store.Load(); ok {
+		t.Fatal("sticky file still present after clear")
 	}
 }
 

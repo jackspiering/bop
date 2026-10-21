@@ -11,6 +11,15 @@ expose it to networks you do not trust.
   `network_mode: service:` or `container:`, and `--network host`. If you change
   `BOP_CONTROL_ADDR` to a non-loopback address, any host that can reach that
   address can crash the container.
+- **Browsers are out of scope for the control listener, and are rejected.**
+  The control API is for the `bop` CLI only. Every request that carries an
+  `Origin` or any `Sec-Fetch-*` header gets `403`, as does one whose `Host` is not
+  an IP address, `localhost` or the host in `BOP_CONTROL_ADDR`, and a `POST`
+  that is not `Content-Type: application/json` gets `415`. A web page therefore
+  cannot switch the mode, or read `GET /status` through DNS rebinding, even with
+  `--network host`. This applies to the whole listener, so any future endpoint
+  must keep it. If you find a way for a browser to reach the control API,
+  report it as a vulnerability.
 - **`oom` can take a host down.** It refuses to run without a cgroup memory
   limit unless `BOP_OOM_UNSAFE=1` is set. Do not set it on a machine you care about.
 
