@@ -1,16 +1,20 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,15 +28,36 @@ type harness struct {
 	client  *Client
 	store   mode.Store
 	exited  chan int
+	dataLog *syncBuffer
+}
+
+// syncBuffer is a bytes.Buffer that is safe to write from server goroutines.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func newHarness(t *testing.T, hooks mode.Hooks) *harness {
 	t.Helper()
-	h := &harness{exited: make(chan int, 1)}
+	h := &harness{exited: make(chan int, 1), dataLog: &syncBuffer{}}
 	hooks.Exit = func(c int) { h.exited <- c }
 	h.store = mode.Store{Dir: filepath.Join(t.TempDir(), "bop")}
 	h.srv = New(mode.NewMachine(hooks), h.store, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
-	h.data = httptest.NewServer(h.srv.DataHandler())
+	h.data = httptest.NewUnstartedServer(h.srv.DataHandler())
+	h.data.Config.ErrorLog = log.New(h.dataLog, "", 0)
+	h.data.Start()
 	h.control = httptest.NewServer(h.srv.ControlHandler())
 	t.Cleanup(h.data.Close)
 	t.Cleanup(h.control.Close)
@@ -149,6 +174,47 @@ func TestHangBlocksDataButNotControl(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("pending request was not released by recovery")
+	}
+	if l := h.dataLog.String(); l != "" {
+		t.Fatalf("data server logged:\n%s", l)
+	}
+}
+
+// A client that half-closes after its request cancels the request context at
+// once. In hang mode it must still get no response, not an implicit 200.
+func TestHangIgnoresHalfClosedClient(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	rawGet := func(path string) []byte {
+		t.Helper()
+		conn, err := net.Dial("tcp", h.data.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := io.WriteString(conn, "GET "+path+" HTTP/1.1\r\nHost: bop\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		b, _ := io.ReadAll(conn)
+		return b
+	}
+	// Control: a half-closed client does get an answer when healthy.
+	if b := rawGet("/healthz"); !bytes.HasPrefix(b, []byte("HTTP/1.1 200")) {
+		t.Fatalf("healthy: %q", b)
+	}
+	if _, err := h.client.Set(context.Background(), "hang"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/healthz", "/info"} {
+		if b := rawGet(p); bytes.HasPrefix(b, []byte("HTTP/")) {
+			t.Fatalf("GET %s answered in hang mode: %q", p, b)
+		}
+	}
+	if l := h.dataLog.String(); l != "" {
+		t.Fatalf("data server logged:\n%s", l)
 	}
 }
 

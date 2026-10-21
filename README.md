@@ -54,7 +54,7 @@ the image has `bop` on `PATH`.
 | `crash` | `exit=<code>` (1), `after=<dur>` (0) | Exits with `code` after `after`. Via exec it responds first, then exits. |
 | `crash-loop` | `interval=<dur>` (5s), `exit=<code>` (1) | Each process start exits with `code` after `interval`. Only as boot mode or with `sticky=true`; a plain exec is rejected. |
 | `oom` | `rate=<MiB/s>` (64) | Allocates and writes every page until the cgroup kills the process (exit 137, `OOMKilled=true`). Refuses (exit 2) when `/sys/fs/cgroup/memory.max` is `max`, unless `BOP_OOM_UNSAFE=1`. Needs cgroup v2. |
-| `hang` | | `/healthz` and `/info` accept the connection and never answer. The process stays alive and the control listener keeps working, so `bop healthy` recovers it. |
+| `hang` | | `/healthz` and `/info` accept the connection and never answer. A client that closes or half-closes its side gets the connection closed without a response. The process stays alive and the control listener keeps working, so `bop healthy` recovers it. |
 
 Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
 `exit` is 0 to 255.
