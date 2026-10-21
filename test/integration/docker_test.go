@@ -1116,6 +1116,29 @@ func TestSidecarSharesParentNetworkNamespace(t *testing.T) {
 	})
 }
 
+// TestSidecarUnhealthyWhileParentHangs: the sidecar's /info probe also fails
+// while the parent hangs, although the namespace is still shared.
+func TestSidecarUnhealthyWhileParentHangs(t *testing.T) {
+	t.Parallel()
+	parent := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, parent, "healthy", 30*time.Second)
+	sidecar := run(t, "--network", "container:"+parent, sidecarImage, "sidecar", "--target=http://127.0.0.1:8080", "--interval=500ms")
+	waitHealth(t, sidecar, "healthy", 30*time.Second)
+	before := inspect(t, parent, "{{.State.Pid}} {{.RestartCount}}")
+
+	mustExec(t, parent, "bop", "hang")
+	waitHealth(t, sidecar, "unhealthy", 40*time.Second)
+	waitFor(t, sidecar, 20*time.Second, "unreachable log", func() bool {
+		return strings.Contains(logs(sidecar), "target unreachable")
+	})
+	if after := inspect(t, parent, "{{.State.Pid}} {{.RestartCount}}"); after != before {
+		t.Fatalf("parent restarted (%s -> %s); the test needs the same namespace", before, after)
+	}
+
+	mustExec(t, parent, "bop", "healthy")
+	waitHealth(t, sidecar, "healthy", 30*time.Second)
+}
+
 func TestSidecarLogsInstanceIDChange(t *testing.T) {
 	t.Parallel()
 	netName := uniqueName(t)

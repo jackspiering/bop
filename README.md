@@ -159,12 +159,28 @@ when the target becomes unreachable or its `instance_id` changes. It polls the
 target directly, ignoring `HTTP(S)_PROXY`, and treats a redirect as
 unreachable.
 
-In a sidecar on `network_mode: service:<parent>` (or `container:`), its
-healthcheck is `bop healthcheck --url=http://127.0.0.1:8080/info`, which proves
-it still shares the parent's network namespace. When the parent restarts, the
-sidecar keeps the old namespace, the probe fails and the sidecar goes
-unhealthy. That makes a handy test for tools that must also restart or
+In a sidecar on `network_mode: service:<parent>` (or `container:`), give it
+the healthcheck `bop healthcheck --url=http://127.0.0.1:8080/info`, which
+proves it still shares the parent's network namespace. When the parent
+restarts, the sidecar keeps the old namespace, the probe fails and the sidecar
+goes unhealthy. That makes a handy test for tools that must also restart or
 re-attach dependents. See [`examples/sidecar`](examples/sidecar/compose.yaml).
+
+The image's own `HEALTHCHECK` (`bop healthcheck`, the local `/healthz`) also
+applies to `bop sidecar`, which serves nothing:
+
+- In a shared namespace without the `/info` override, the sidecar probes the
+  parent's `/healthz`, so `bop unhealthy` on the parent makes the sidecar
+  unhealthy too. Override it as shown.
+- Outside a shared namespace (for example `--target=http://parent:8080` on a
+  user network), the sidecar is always unhealthy while working fine. Disable
+  the healthcheck there (`healthcheck: {disable: true}`, `--no-healthcheck`).
+
+With the `/info` override, a failing probe does not by itself mean the
+namespace was lost. It also fails while the parent is in `hang` (`/info`
+hangs too, and the sidecar logs "target unreachable"), before the parent's
+data listener binds (`BOP_START_DELAY`), and while the parent is down.
+`unhealthy` mode on the parent does not affect it.
 
 ## Compose examples
 
