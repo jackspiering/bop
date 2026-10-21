@@ -1151,12 +1151,21 @@ func TestSidecarLogsInstanceIDChange(t *testing.T) {
 	waitFor(t, sidecar, 20*time.Second, "target reachable", func() bool {
 		return strings.Contains(logs(sidecar), "target reachable")
 	})
+	id1 := instanceID(t, parent)
 
-	// Same name, same address, new process: a new instance_id.
+	// Same name, same address, new process: a new instance_id. The restart
+	// usually leaves an outage between the two ids; the change is logged anyway.
 	mustDocker(t, "restart", "-t", "5", parent)
+	waitHealth(t, parent, "healthy", 30*time.Second)
+	id2 := instanceID(t, parent)
+	want := "old=" + id1 + " new=" + id2
 	waitFor(t, sidecar, 30*time.Second, "instance_id change", func() bool {
-		l := logs(sidecar)
-		return strings.Contains(l, "instance_id changed") || strings.Contains(l, "target reachable again")
+		for line := range strings.Lines(logs(sidecar)) {
+			if strings.Contains(line, "instance_id changed") && strings.Contains(line, want) {
+				return true
+			}
+		}
+		return false
 	})
 }
 

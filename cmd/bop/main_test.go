@@ -399,6 +399,22 @@ func TestWatcherLogsOnlyChanges(t *testing.T) {
 	}
 }
 
+// A restart usually shows up as an outage followed by a new instance_id, so
+// the first poll after the outage must log the change as well.
+func TestWatcherLogsIDChangeAfterOutage(t *testing.T) {
+	var buf bytes.Buffer
+	w := &watcher{log: slog.New(slog.NewTextHandler(&buf, nil)), target: "t"}
+	w.observe("a", nil)
+	w.observe("", errors.New("refused"))
+	buf.Reset()
+	w.observe("b", nil)
+	for _, want := range []string{"target reachable again", "target instance_id changed", "old=a", "new=b"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("logged %q, want %q", buf.String(), want)
+		}
+	}
+}
+
 func TestPoll(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"instance_id":"abc"}`))
