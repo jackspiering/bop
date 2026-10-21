@@ -117,8 +117,13 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 }
 
 func printState(w io.Writer, st server.State) {
+	// The machine counts hang as healthy because guard does the blocking, but
+	// the container is not: /healthz never answers.
 	health := "healthy"
-	if !st.Healthy {
+	switch {
+	case modeName(st.Mode) == mode.Hang:
+		health = "hanging (/healthz and /info accept connections but never answer)"
+	case !st.Healthy:
 		health = "unhealthy (" + st.Reason + ")"
 	}
 	fmt.Fprintf(w, "mode:        %s\n", st.Mode)
@@ -128,6 +133,15 @@ func printState(w io.Writer, st server.State) {
 	fmt.Fprintf(w, "pid:         %d\n", st.PID)
 	fmt.Fprintf(w, "started_at:  %s\n", st.StartedAt)
 	fmt.Fprintf(w, "version:     %s\n", st.Version)
+}
+
+// modeName returns the mode name from a Mode.String() value such as
+// "hang sticky=true".
+func modeName(s string) string {
+	if f := strings.Fields(s); len(f) > 0 {
+		return f[0]
+	}
+	return ""
 }
 
 const (
