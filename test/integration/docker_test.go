@@ -387,6 +387,7 @@ func TestCrashLoopRejectedWhenNotSticky(t *testing.T) {
 	if code != 2 || !strings.Contains(out, "sticky=true") {
 		t.Fatalf("exec crash-loop = %d\n%s", code, out)
 	}
+	assertMode(t, c, "healthy")
 	if health(t, c) != "healthy" || inspect(t, c, "{{.State.Running}}") != "true" {
 		t.Fatal("rejected command must not affect the container")
 	}
@@ -498,6 +499,7 @@ func TestOOMRefusedWithoutLimit(t *testing.T) {
 	if code != 2 || !strings.Contains(out, "memory limit") {
 		t.Fatalf("exec oom = %d\n%s", code, out)
 	}
+	assertMode(t, c, "healthy")
 	if health(t, c) != "healthy" {
 		t.Fatal("refused oom must leave the container healthy")
 	}
@@ -886,6 +888,7 @@ func TestStickyOnReadOnlyRootFails(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "read-only") {
 		t.Fatalf("exec = %d\n%s", code, out)
 	}
+	assertMode(t, c, "healthy")
 	if health(t, c) != "healthy" {
 		t.Fatal("a failed sticky write must not change the mode")
 	}
@@ -1039,15 +1042,28 @@ func TestExecBopInRunningContainer(t *testing.T) {
 	}
 }
 
-func instanceID(t *testing.T, c string) string {
+// statusField returns the value of key in `bop status`, which reads the live
+// mode from the process instead of waiting for Docker's lagging health status.
+func statusField(t *testing.T, c, key string) string {
 	t.Helper()
-	for _, line := range strings.Split(mustExec(t, c, "bop", "status"), "\n") {
-		if v, ok := strings.CutPrefix(line, "instance_id: "); ok {
+	out := mustExec(t, c, "bop", "status")
+	for line := range strings.Lines(out) {
+		if v, ok := strings.CutPrefix(line, key+":"); ok {
 			return strings.TrimSpace(v)
 		}
 	}
-	t.Fatal("no instance_id in status")
+	t.Fatalf("no %s in status:\n%s", key, out)
 	return ""
+}
+
+func instanceID(t *testing.T, c string) string { return statusField(t, c, "instance_id") }
+
+// assertMode fails unless the live mode is want, right after a rejected command.
+func assertMode(t *testing.T, c, want string) {
+	t.Helper()
+	if got := statusField(t, c, "mode"); got != want {
+		t.Fatalf("live mode = %q, want %q: a rejected command must not change it", got, want)
+	}
 }
 
 func TestCustomAddresses(t *testing.T) {
