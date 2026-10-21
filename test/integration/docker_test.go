@@ -468,16 +468,31 @@ func TestHang(t *testing.T) {
 
 func TestStartDelay(t *testing.T) {
 	t.Parallel()
-	c := run(t, cat(env("BOP_START_DELAY", "8s"), []string{image})...)
+	const delay = 8 * time.Second
+	t0 := time.Now() // before docker run, so the container starts at or after t0
+	c := run(t, cat(env("BOP_START_DELAY", delay.String()), []string{image})...)
 	waitHealth(t, c, "starting", 5*time.Second)
 	// The control listener is up while the data listener is not.
 	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        healthy") {
 		t.Fatalf("status during delay:\n%s", out)
 	}
-	if health(t, c) != "starting" {
-		t.Fatalf("health during the delay = %s, want starting", health(t, c))
+	code, out := execCode(t, c, "bop", "healthcheck")
+	l := logs(c)
+	if time.Since(t0) >= delay {
+		t.Fatalf("checks finished after BOP_START_DELAY=%s; host too slow to observe the delay", delay)
+	}
+	// Not bound at all (refused), not merely bound and not serving (timeout).
+	if code != 1 || !strings.Contains(out, "connection refused") {
+		t.Fatalf("data listener during the delay: healthcheck = %d\n%s", code, out)
+	}
+	if strings.Contains(l, "listener=data") {
+		t.Fatalf("data listener bound during the delay:\n%s", l)
 	}
 	waitHealth(t, c, "healthy", 40*time.Second)
+	// The bind happens at process start + delay >= t0 + delay.
+	if d := time.Since(t0); d < delay {
+		t.Fatalf("healthy after %s, before BOP_START_DELAY=%s", d, delay)
+	}
 }
 
 func stop(t *testing.T, c string, seconds int) time.Duration {

@@ -145,6 +145,10 @@ func TestExamplesRun(t *testing.T) {
 		c := upExample(t, "start-delay", "bop").container("bop")
 		waitHealth(t, c, "starting", 10*time.Second)
 		mustExec(t, c, "bop", "status")
+		// The example's delay is 20s, so the data port is still unbound here.
+		if code, out := execCode(t, c, "bop", "healthcheck"); code != 1 || !strings.Contains(out, "connection refused") {
+			t.Fatalf("data listener during the delay: healthcheck = %d\n%s", code, out)
+		}
 		waitHealth(t, c, "healthy", 60*time.Second)
 	})
 
