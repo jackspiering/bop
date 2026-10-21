@@ -97,7 +97,8 @@ func (s *Server) state() State {
 }
 
 // DataHandler serves /healthz and /info. In hang mode both block until the
-// mode changes or the client gives up.
+// mode changes. A client that closes or half-closes its side meanwhile gets
+// the connection closed with no response.
 func (s *Server) DataHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.guard(func(w http.ResponseWriter, _ *http.Request) {
@@ -115,7 +116,8 @@ func (s *Server) DataHandler() http.Handler {
 	return mux
 }
 
-// guard blocks the request while the machine is in hang mode.
+// guard blocks the request while the machine is in hang mode. If the client
+// goes away first it aborts the request, so nothing is ever written.
 func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for s.Machine.Snapshot().Mode.Name == mode.Hang {
@@ -127,7 +129,9 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 			select {
 			case <-changed:
 			case <-r.Context().Done():
-				return
+				// The client closed or half-closed its side. Returning normally
+				// would make net/http send an implicit 200 OK; abort instead.
+				panic(http.ErrAbortHandler)
 			}
 		}
 		next(w, r)

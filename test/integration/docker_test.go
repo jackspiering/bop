@@ -429,7 +429,7 @@ func TestHang(t *testing.T) {
 		t.Fatal("container must keep running while hung")
 	}
 	// The control listener still answers.
-	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        hang") {
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        hang") || !strings.Contains(out, "health:      hanging") {
 		t.Fatalf("status:\n%s", out)
 	}
 

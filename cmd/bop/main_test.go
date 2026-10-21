@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackspiering/bop/internal/mode"
+	"github.com/jackspiering/bop/internal/server"
 )
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -243,5 +244,24 @@ func TestPoll(t *testing.T) {
 	id, err := poll(context.Background(), http.DefaultClient, ts.URL+"/info")
 	if err != nil || id != "abc" {
 		t.Fatalf("poll = %q, %v", id, err)
+	}
+}
+
+func TestPrintState(t *testing.T) {
+	for _, tc := range []struct {
+		st   server.State
+		want string
+	}{
+		{server.State{Info: server.Info{Mode: "healthy"}, Healthy: true}, "health:      healthy\n"},
+		{server.State{Info: server.Info{Mode: "unhealthy after=0s"}, Reason: "unhealthy mode is active"}, "health:      unhealthy (unhealthy mode is active)\n"},
+		{server.State{Info: server.Info{Mode: "unhealthy after=1m0s"}, Healthy: true}, "health:      healthy\n"},
+		{server.State{Info: server.Info{Mode: "hang"}, Healthy: true}, "health:      hanging"},
+		{server.State{Info: server.Info{Mode: "hang sticky=true", Sticky: true}, Healthy: true}, "health:      hanging"},
+	} {
+		var out bytes.Buffer
+		printState(&out, tc.st)
+		if !strings.Contains(out.String(), "mode:        "+tc.st.Mode+"\n") || !strings.Contains(out.String(), tc.want) {
+			t.Errorf("printState(%q) lacks %q:\n%s", tc.st.Mode, tc.want, out.String())
+		}
 	}
 }
