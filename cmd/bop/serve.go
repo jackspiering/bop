@@ -50,6 +50,14 @@ func loadConfig(getenv func(string) string) (config, error) {
 }
 
 func serve(stderr io.Writer, getenv func(string) string) int {
+	// Install the handler before any boot work: until signal.Notify runs, the Go
+	// runtime's default handler turns SIGTERM/SIGINT into exit 143/130 and
+	// BOP_ON_SIGTERM is ignored. The buffer holds signals that arrive during boot.
+	// A residual window remains during runtime init, before main runs.
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
+
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	cfg, err := loadConfig(getenv)
@@ -116,9 +124,6 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		return usageError(stderr, "%v", err)
 	}
 
-	sigs := make(chan os.Signal, 4)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
-
 	go func() {
 		time.Sleep(cfg.startDelay)
 		ln, err := net.Listen("tcp", cfg.addr)
@@ -149,8 +154,10 @@ func serveHTTP(log *slog.Logger, name string, ln net.Listener, h http.Handler) {
 }
 
 // handleSignals blocks and returns the exit code once SIGTERM/SIGINT is
-// handled according to the BOP_ON_SIGTERM policy. PID 1 gets no default
-// signal handling from the kernel, so these must be handled explicitly.
+// handled according to the BOP_ON_SIGTERM policy. The Go runtime, not the
+// kernel, handles an uncaught SIGTERM/SIGINT by exiting 143/130, including
+// when the process is PID 1. The handler is installed at the start of serve;
+// a residual window remains during runtime init, before main runs.
 func handleSignals(log *slog.Logger, st mode.Sigterm, sigs <-chan os.Signal) int {
 	var delayed <-chan time.Time
 	for {

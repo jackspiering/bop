@@ -76,7 +76,7 @@ Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
 |---|---|---|
 | `BOP_MODE` | `healthy` | Initial mode, same grammar as above. |
 | `BOP_START_DELAY` | `0` | Don't bind the data listener until this has passed. The control listener binds immediately. |
-| `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly because PID 1 ignores unhandled signals. |
+| `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly. Until that handler is installed the Go runtime exits 143 (SIGTERM) or 130 (SIGINT), including as PID 1; a short window remains during process startup. |
 | `BOP_ADDR` | `:8080` | Data listener. The image's healthcheck follows its port. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener. `docker exec` inherits it from the container's environment. |
 | `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. A sticky mode lasts exactly as long as this directory; see [Sticky](#sticky-restart-vs-recreate). |

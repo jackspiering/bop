@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -297,5 +298,73 @@ func TestPrintState(t *testing.T) {
 		if !strings.Contains(out.String(), "mode:        "+tc.st.Mode+"\n") || !strings.Contains(out.String(), tc.want) {
 			t.Errorf("printState(%q) lacks %q:\n%s", tc.st.Mode, tc.want, out.String())
 		}
+	}
+}
+
+// TestServeHelperProcess is not a test: TestServe* tests re-run the test
+// binary with BOP_TEST_SERVE=1 to get a real `bop serve` process.
+func TestServeHelperProcess(t *testing.T) {
+	if os.Getenv("BOP_TEST_SERVE") != "1" {
+		t.Skip("helper process")
+	}
+	os.Exit(run(nil, os.Stdout, os.Stderr, os.Getenv))
+}
+
+func serveHelper(t *testing.T, env ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestServeHelperProcess$")
+	cmd.Env = append(os.Environ(), append([]string{"BOP_TEST_SERVE=1",
+		"BOP_ADDR=127.0.0.1:0", "BOP_CONTROL_ADDR=127.0.0.1:0"}, env...)...)
+	return cmd
+}
+
+func TestServeSigtermDuringBootFollowsPolicy(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "mode")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	cmd := serveHelper(t, "BOP_STATE_DIR="+dir, "BOP_ON_SIGTERM=exit:7")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	// Opening the FIFO for writing returns once bop has opened it to read
+	// the sticky file, i.e. while it is blocked mid-boot.
+	opened := make(chan *os.File, 1)
+	go func() {
+		f, err := os.OpenFile(fifo, os.O_WRONLY, 0)
+		if err != nil {
+			t.Error(err)
+		}
+		opened <- f
+	}()
+	var w *os.File
+	select {
+	case w = <-opened:
+	case <-time.After(10 * time.Second):
+		t.Fatal("bop never opened the sticky file")
+	}
+	if w == nil {
+		t.FailNow()
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // let the signal land before boot continues
+	_, _ = w.WriteString("healthy\n")
+	w.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 7 {
+			t.Fatalf("SIGTERM during boot: %v, want exit status 7 (BOP_ON_SIGTERM=exit:7)", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("bop did not exit after SIGTERM")
 	}
 }
