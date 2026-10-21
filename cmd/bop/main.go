@@ -44,7 +44,7 @@ Environment (boot only):
   BOP_START_DELAY  don't bind the data listener for this long
   BOP_ON_SIGTERM   exit:<code> | ignore | delay:<dur> (default exit:0)
   BOP_ADDR         data listener, [host]:port or a bare port (default :8080)
-  BOP_CONTROL_ADDR control listener, same form (default 127.0.0.1:9901)
+  BOP_CONTROL_ADDR control listener, [host]:port (default 127.0.0.1:9901)
   BOP_STATE_DIR    sticky state directory (default /tmp/bop)
   BOP_OOM_UNSAFE   1 allows oom without a memory limit
 `
@@ -95,7 +95,7 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 	defer cancel()
 
 	// Parsed like serve parses it, so a bare port reaches the same listener.
-	addr, err := parseListenAddr("BOP_CONTROL_ADDR", envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr))
+	addr, err := parseControlAddr(envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr))
 	if err != nil {
 		return usageError(stderr, "%v", err)
 	}

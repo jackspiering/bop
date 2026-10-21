@@ -918,17 +918,32 @@ func TestCustomAddresses(t *testing.T) {
 	}
 }
 
-// A bare port is shorthand for ":port"; the listener, the image's healthcheck
-// and docker exec must all agree on it.
+// A bare BOP_ADDR port is shorthand for ":port"; the listener and the image's
+// healthcheck must agree on it. A bare BOP_CONTROL_ADDR port is refused, so
+// the control API is never exposed by accident.
 func TestBarePortAddresses(t *testing.T) {
 	t.Parallel()
-	c := run(t, cat(fastHealth, env("BOP_ADDR", "9000"), env("BOP_CONTROL_ADDR", "9902"), []string{image})...)
-	waitHealth(t, c, "healthy", 30*time.Second)
-	mustExec(t, c, "bop", "unhealthy")
-	waitHealth(t, c, "unhealthy", 30*time.Second)
-	if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=[::]:9902") {
-		t.Fatalf("listeners not on the configured ports:\n%s", out)
-	}
+	t.Run("data", func(t *testing.T) {
+		t.Parallel()
+		c := run(t, cat(fastHealth, env("BOP_ADDR", "9000"), []string{image})...)
+		waitHealth(t, c, "healthy", 30*time.Second)
+		mustExec(t, c, "bop", "unhealthy")
+		waitHealth(t, c, "unhealthy", 30*time.Second)
+		if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9901") {
+			t.Fatalf("listeners not on the expected addresses:\n%s", out)
+		}
+	})
+	t.Run("control", func(t *testing.T) {
+		t.Parallel()
+		c := run(t, cat(env("BOP_CONTROL_ADDR", "9902"), []string{image})...)
+		waitExited(t, c, 30*time.Second)
+		if got := exitCode(t, c); got != 2 {
+			t.Fatalf("exit code = %d, want 2", got)
+		}
+		if out := logs(c); !strings.Contains(out, "use 127.0.0.1:9902") {
+			t.Fatalf("expected a hint to keep it local, got:\n%s", out)
+		}
+	})
 }
 
 func TestSidecarSharesParentNetworkNamespace(t *testing.T) {

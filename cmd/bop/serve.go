@@ -50,7 +50,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.addr, err = parseListenAddr("BOP_ADDR", envOr(getenv, "BOP_ADDR", defaultAddr)); err != nil {
 		return c, err
 	}
-	if c.controlAddr, err = parseListenAddr("BOP_CONTROL_ADDR", envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)); err != nil {
+	if c.controlAddr, err = parseControlAddr(envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)); err != nil {
 		return c, err
 	}
 	c.store = mode.Store{Dir: envOr(getenv, "BOP_STATE_DIR", defaultStateDir)}
@@ -76,6 +76,17 @@ func parseListenAddr(name, v string) (string, error) {
 		return "", &mode.UsageError{Msg: fmt.Sprintf("invalid %s=%q: expected [host]:port or a bare port", name, v)}
 	}
 	return addr, nil
+}
+
+// parseControlAddr is parseListenAddr without the bare-port shorthand: the
+// control API switches modes, so binding it to all interfaces must be spelled
+// out (":9902"), not implied by "9902". serve and the exec CLI both use it.
+func parseControlAddr(v string) (string, error) {
+	if _, err := strconv.ParseUint(v, 10, 16); err == nil {
+		return "", &mode.UsageError{Msg: fmt.Sprintf("invalid BOP_CONTROL_ADDR=%q: expected [host]:port; "+
+			"use 127.0.0.1:%s to keep the control listener local (or :%s for all interfaces)", v, v, v)}
+	}
+	return parseListenAddr("BOP_CONTROL_ADDR", v)
 }
 
 func serve(stderr io.Writer, getenv func(string) string) int {

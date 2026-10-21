@@ -80,12 +80,39 @@ func TestRunExecUsesServeAddrGrammar(t *testing.T) {
 	defer ts.Close()
 	_, port, _ := strings.Cut(strings.TrimPrefix(ts.URL, "http://"), ":")
 	var out, errb bytes.Buffer
-	// serve binds a bare port on all interfaces; the CLI must find it on loopback.
-	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": port})); code != 0 {
-		t.Fatalf("status with BOP_CONTROL_ADDR=%s = %d, stderr %q", port, code, errb.String())
+	// serve binds ":port" on all interfaces; the CLI must find it on loopback.
+	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": ":" + port})); code != 0 {
+		t.Fatalf("status with BOP_CONTROL_ADDR=:%s = %d, stderr %q", port, code, errb.String())
+	}
+	// serve refuses a bare control port, so the CLI does too.
+	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": port})); code != 2 {
+		t.Fatalf("status with BOP_CONTROL_ADDR=%s = %d, want 2", port, code)
 	}
 	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": "nope"})); code != 2 {
 		t.Fatalf("status with BOP_CONTROL_ADDR=nope = %d, want 2", code)
+	}
+}
+
+func TestParseControlAddr(t *testing.T) {
+	for _, in := range []string{"127.0.0.1:9901", ":9902", "[::1]:9902", "localhost:9902"} {
+		if got, err := parseControlAddr(in); err != nil || got != in {
+			t.Errorf("parseControlAddr(%q) = %q, %v; want it unchanged", in, got, err)
+		}
+	}
+	for _, in := range []string{"9902", "nope", "127.0.0.1:70000"} {
+		_, err := parseControlAddr(in)
+		var ue *mode.UsageError
+		if !errors.As(err, &ue) || !strings.Contains(err.Error(), "BOP_CONTROL_ADDR") {
+			t.Errorf("parseControlAddr(%q) = %v, want a usage error naming BOP_CONTROL_ADDR", in, err)
+		}
+	}
+	// Only a bare port gets the hint; other junk gets the plain grammar error.
+	if _, err := parseControlAddr("nope"); err == nil || strings.Contains(err.Error(), "127.0.0.1:nope") {
+		t.Errorf("parseControlAddr(\"nope\") = %v, want no bare-port hint", err)
+	}
+	// The error says how to keep the listener local.
+	if _, err := parseControlAddr("9902"); err == nil || !strings.Contains(err.Error(), "127.0.0.1:9902") {
+		t.Errorf("parseControlAddr(\"9902\") = %v, want a hint naming 127.0.0.1:9902", err)
 	}
 }
 
@@ -197,10 +224,10 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("config = %+v", cfg)
 	}
 
-	// A bare port means all interfaces, for both listeners.
-	cfg, err = loadConfig(env(map[string]string{"BOP_ADDR": "9000", "BOP_CONTROL_ADDR": "9902"}))
-	if err != nil || cfg.addr != ":9000" || cfg.controlAddr != ":9902" {
-		t.Errorf("bare ports: addr=%q control=%q, %v", cfg.addr, cfg.controlAddr, err)
+	// A bare data port means all interfaces.
+	cfg, err = loadConfig(env(map[string]string{"BOP_ADDR": "9000"}))
+	if err != nil || cfg.addr != ":9000" {
+		t.Errorf("bare BOP_ADDR: addr=%q, %v", cfg.addr, err)
 	}
 
 	for _, bad := range []map[string]string{
@@ -214,6 +241,7 @@ func TestLoadConfig(t *testing.T) {
 		{"BOP_ADDR": "::1:9000"},
 		{"BOP_ADDR": ":http"},
 		{"BOP_CONTROL_ADDR": "nope"},
+		{"BOP_CONTROL_ADDR": "9902"}, // would expose the control API; needs a host
 		{"BOP_CONTROL_ADDR": "127.0.0.1:70000"},
 	} {
 		_, err := loadConfig(env(bad))
