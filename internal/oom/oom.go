@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,6 +14,7 @@ import (
 const (
 	cgroupRoot     = "/sys/fs/cgroup"
 	procSelfCgroup = "/proc/self/cgroup"
+	meminfoPath    = "/proc/meminfo"
 )
 
 const (
@@ -69,18 +71,78 @@ func resolve(root, procSelfCgroup string) (string, error) {
 	return "", fmt.Errorf("memory controller unavailable: %s; set BOP_OOM_UNSAFE=1 to run anyway", missing)
 }
 
-// Check refuses to run unless the cgroup at path has a memory limit. The
+// Check refuses to run unless the cgroup whose memory.max is at path bounds
+// oom below host memory: the limit must parse, be below MemTotal, and swap must
+// be limited too (memory.swap.max not "max") when the host has swap. A missing
+// memory.swap.max is allowed, because swap accounting can be disabled. The
 // caller may skip the check (BOP_OOM_UNSAFE=1).
 func Check(path string) error {
-	b, err := os.ReadFile(path)
+	return check(path, filepath.Join(filepath.Dir(path), "memory.swap.max"), meminfoPath)
+}
+
+func check(memMaxPath, swapMaxPath, meminfoPath string) error {
+	b, err := os.ReadFile(memMaxPath)
 	if err != nil {
-		return fmt.Errorf("cannot read %s: %w; set BOP_OOM_UNSAFE=1 to run anyway", path, err)
+		return fmt.Errorf("cannot read %s: %w; set BOP_OOM_UNSAFE=1 to run anyway", memMaxPath, err)
 	}
-	if strings.TrimSpace(string(b)) == "max" {
+	v := strings.TrimSpace(string(b))
+	if v == "max" {
 		return fmt.Errorf("%w: %s is \"max\", so oom would consume host memory; "+
-			"start the container with a memory limit (--memory / mem_limit) or set BOP_OOM_UNSAFE=1", ErrNoLimit, path)
+			"start the container with a memory limit (--memory / mem_limit) or set BOP_OOM_UNSAFE=1", ErrNoLimit, memMaxPath)
+	}
+	limit, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("cannot parse %s (%q); set BOP_OOM_UNSAFE=1 to run anyway", memMaxPath, v)
+	}
+	memTotal, swapTotal, err := meminfo(meminfoPath)
+	if err != nil {
+		return fmt.Errorf("%w; set BOP_OOM_UNSAFE=1 to run anyway", err)
+	}
+	if limit >= memTotal {
+		return fmt.Errorf("%w: %s is %d bytes, at least the host's MemTotal of %d bytes, so oom would consume host memory; "+
+			"start the container with a lower memory limit or set BOP_OOM_UNSAFE=1", ErrNoLimit, memMaxPath, limit, memTotal)
+	}
+	b, err = os.ReadFile(swapMaxPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	case err != nil:
+		return fmt.Errorf("cannot read %s: %w; set BOP_OOM_UNSAFE=1 to run anyway", swapMaxPath, err)
+	}
+	if strings.TrimSpace(string(b)) == "max" && swapTotal > 0 {
+		return fmt.Errorf("%w: %s is \"max\", so oom would fill host swap before the cgroup kill; "+
+			"set --memory-swap equal to --memory (memswap_limit = mem_limit) or set BOP_OOM_UNSAFE=1", ErrNoLimit, swapMaxPath)
 	}
 	return nil
+}
+
+// meminfo returns MemTotal and SwapTotal in bytes.
+func meminfo(path string) (memTotal, swapTotal int64, err error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	found := 0
+	for line := range strings.Lines(string(b)) {
+		f := strings.Fields(line)
+		if len(f) < 2 || (f[0] != "MemTotal:" && f[0] != "SwapTotal:") {
+			continue
+		}
+		kb, err := strconv.ParseInt(f[1], 10, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("cannot parse %s in %s: %w", f[0], path, err)
+		}
+		if f[0] == "MemTotal:" {
+			memTotal = kb * 1024
+		} else {
+			swapTotal = kb * 1024
+		}
+		found++
+	}
+	if memTotal == 0 || found < 2 {
+		return 0, 0, fmt.Errorf("no MemTotal and SwapTotal in %s", path)
+	}
+	return memTotal, swapTotal, nil
 }
 
 // Run allocates and touches rate MiB per second until stop is closed or the

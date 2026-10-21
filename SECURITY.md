@@ -20,8 +20,11 @@ expose it to networks you do not trust.
   `--network host`. This applies to the whole listener, so any future endpoint
   must keep it. If you find a way for a browser to reach the control API,
   report it as a vulnerability.
-- **`oom` can take a host down.** It refuses to run without a cgroup memory
-  limit unless `BOP_OOM_UNSAFE=1` is set. Do not set it on a machine you care about.
+- **`oom` can take a host down.** Unless `BOP_OOM_UNSAFE=1` is set, it refuses
+  to run when its cgroup's `memory.max` is `max`, unparsable or at least the
+  host's `MemTotal`, or when `memory.swap.max` is `max` on a host with swap. Set
+  `--memory-swap` equal to `--memory` so the kill comes before any swapping. Do
+  not set `BOP_OOM_UNSAFE=1` on a machine you care about.
 
 ## Reporting a vulnerability
 

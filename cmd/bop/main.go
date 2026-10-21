@@ -46,7 +46,7 @@ Environment (boot only):
   BOP_ADDR         data listener, [host]:port or a bare port (default :8080)
   BOP_CONTROL_ADDR control listener, [host]:port (default 127.0.0.1:9901)
   BOP_STATE_DIR    sticky state directory (default /tmp/bop)
-  BOP_OOM_UNSAFE   1 allows oom without a memory limit
+  BOP_OOM_UNSAFE   1 skips the oom guard (memory limit below host RAM, swap limited)
 `
 
 func main() {
