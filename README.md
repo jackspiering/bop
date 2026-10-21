@@ -93,7 +93,10 @@ A proxy's own error or a redirect is never mistaken for the target's state.
 
 - `GET /healthz`: `200 ok`, or `503` with a short reason.
 - `GET /info`: JSON with `instance_id` (random per process start), `pid`,
-  `hostname`, `started_at`, `mode`, `sticky`, `version`.
+  `hostname`, `started_at`, `mode`, `sticky` (whether the running mode is
+  sticky), `sticky_mode` (the mode stored in the sticky file, which the next
+  restart boots into; omitted when there is none, `invalid: <reason>` when the
+  file cannot be used) and `version`. `/healthz` never reads the sticky file.
 - Control listener (`BOP_CONTROL_ADDR`): a small JSON API (`GET /status`,
   `POST /mode` with `{"mode":"<command>"}`, including `clear`) used by the CLI only.
   **Caveat:** anything that shares the container's network namespace can reach
@@ -133,7 +136,9 @@ the container.
 
 On start, a sticky file overrides `BOP_MODE`. `bop healthy sticky=true` and
 `bop clear` remove it. A non-sticky switch does not touch the file, so the
-sticky mode returns on the next restart. With a read-only root and no writable
+sticky mode returns on the next restart. `bop status` (`sticky_mode:`) and
+`/info` (`sticky_mode`) show the stored mode, so you can tell whether a restart
+will bring the failure back. With a read-only root and no writable
 mount on `BOP_STATE_DIR`, bop reports the write failure and leaves the mode
 unchanged. `bop clear` and `bop healthy sticky=true` still return to `healthy`
 on a read-only root, since there is no sticky file to remove. Note that

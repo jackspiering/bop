@@ -32,7 +32,11 @@ type Info struct {
 	Hostname   string `json:"hostname"`
 	StartedAt  string `json:"started_at"`
 	Mode       string `json:"mode"`
-	Sticky     bool   `json:"sticky"`
+	Sticky     bool   `json:"sticky"` // the running mode's flag
+	// StickyMode is the mode persisted in the sticky file, which the next
+	// restart boots into: empty when there is none, "invalid: <err>" when
+	// the file cannot be used.
+	StickyMode string `json:"sticky_mode,omitempty"`
 	Version    string `json:"version"`
 }
 
@@ -64,6 +68,11 @@ type Server struct {
 	// mode always come from the same command. Reads do not take it.
 	mu sync.Mutex
 
+	// stickyErrMu guards stickyErr, the last sticky file error logged, so
+	// polling /info does not log the same warning on every request.
+	stickyErrMu sync.Mutex
+	stickyErr   string
+
 	instanceID string
 	hostname   string
 	startedAt  time.Time
@@ -88,7 +97,16 @@ func New(m *mode.Machine, store mode.Store, log *slog.Logger, version string) *S
 // InstanceID returns the random per-process ID.
 func (s *Server) InstanceID() string { return s.instanceID }
 
+// state reports the running state plus the persisted sticky mode. It reads
+// the sticky file, so /healthz must not use it.
 func (s *Server) state() State {
+	st := s.liveState()
+	st.StickyMode = s.stickyMode()
+	return st
+}
+
+// liveState reports the running state from the machine only.
+func (s *Server) liveState() State {
 	snap := s.Machine.Snapshot()
 	return State{
 		Info: Info{
@@ -105,13 +123,35 @@ func (s *Server) state() State {
 	}
 }
 
+func (s *Server) stickyMode() string {
+	m, ok, err := s.Store.Load()
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	s.stickyErrMu.Lock()
+	changed := msg != s.stickyErr
+	s.stickyErr = msg
+	s.stickyErrMu.Unlock()
+	if err != nil && changed {
+		s.Log.Warn("sticky mode file unusable", "err", err)
+	}
+	switch {
+	case err != nil:
+		return "invalid: " + msg
+	case ok:
+		return m.String()
+	}
+	return ""
+}
+
 // DataHandler serves /healthz and /info. In hang mode both block until the
 // mode changes. A client that closes or half-closes its side meanwhile gets
 // the connection closed with no response.
 func (s *Server) DataHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.guard(func(w http.ResponseWriter, _ *http.Request) {
-		st := s.state()
+		st := s.liveState()
 		if !st.Healthy {
 			http.Error(w, st.Reason, http.StatusServiceUnavailable)
 			return

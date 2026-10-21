@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -591,5 +592,115 @@ func TestNewClientWildcardHost(t *testing.T) {
 		if got := NewClient(in, nil).base; got != want {
 			t.Errorf("NewClient(%q).base = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestStatusReportsPersistedStickyMode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		commands []string
+		want     string // sticky_mode; "" means omitted
+	}{
+		{"none", nil, ""},
+		{"sticky", []string{"unhealthy sticky=true"}, "unhealthy after=0s sticky=true"},
+		{"sticky then non-sticky", []string{"unhealthy sticky=true", "healthy"}, "unhealthy after=0s sticky=true"},
+		{"sticky then other non-sticky", []string{"crash-loop interval=1h sticky=true", "unhealthy"}, "crash-loop interval=1h0m0s exit=1 sticky=true"},
+		{"cleared", []string{"unhealthy sticky=true", "healthy", "clear"}, ""},
+		{"healthy sticky", []string{"unhealthy sticky=true", "healthy sticky=true"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, mode.Hooks{})
+			ctx := context.Background()
+			var last State
+			for _, c := range tc.commands {
+				st, err := h.client.Set(ctx, c)
+				if err != nil {
+					t.Fatalf("Set(%q): %v", c, err)
+				}
+				last = st
+			}
+			if len(tc.commands) > 0 && last.StickyMode != tc.want {
+				t.Errorf("control response sticky_mode = %q, want %q", last.StickyMode, tc.want)
+			}
+			st, err := h.client.Status(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.StickyMode != tc.want {
+				t.Errorf("/status sticky_mode = %q, want %q", st.StickyMode, tc.want)
+			}
+			if tc.name == "sticky then non-sticky" && st.Sticky {
+				t.Error("sticky must stay the live mode's flag")
+			}
+			_, body := h.get(t, "/info")
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(body), &raw); err != nil {
+				t.Fatal(err)
+			}
+			got, present := raw["sticky_mode"]
+			if tc.want == "" && present {
+				t.Errorf("/info sticky_mode = %v, want it omitted", got)
+			}
+			if tc.want != "" && got != tc.want {
+				t.Errorf("/info sticky_mode = %v, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStatusReportsInvalidStickyFile(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	if err := os.MkdirAll(h.store.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.store.Dir, "mode"), []byte("explode\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs lockedBuffer
+	h.srv.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	for range 3 {
+		st, err := h.client.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(st.StickyMode, "invalid: ") {
+			t.Fatalf("sticky_mode = %q, want an invalid: prefix", st.StickyMode)
+		}
+	}
+	// Polling must not log the same warning on every request.
+	if n := strings.Count(logs.String(), "sticky mode file unusable"); n != 1 {
+		t.Fatalf("logged the warning %d times, want once:\n%s", n, logs.String())
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// TestHealthzDoesNotReadStickyFile: with a FIFO as the sticky file, any read
+// blocks forever, so /healthz answering proves it does not touch the file.
+func TestHealthzDoesNotReadStickyFile(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	if err := os.MkdirAll(h.store.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(h.store.Dir, "mode"), 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	if code, body := h.get(t, "/healthz"); code != 200 {
+		t.Fatalf("healthz = %d %q", code, body)
 	}
 }

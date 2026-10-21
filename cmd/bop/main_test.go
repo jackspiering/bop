@@ -656,3 +656,16 @@ func TestProbeClientIgnoresProxyEnvironment(t *testing.T) {
 		t.Fatalf("Timeout = %s", c.Timeout)
 	}
 }
+
+func TestPrintStateStickyMode(t *testing.T) {
+	for want, st := range map[string]server.State{
+		"sticky_mode: (none)\n":                         {},
+		"sticky_mode: unhealthy after=0s sticky=true\n": {Info: server.Info{StickyMode: "unhealthy after=0s sticky=true"}},
+	} {
+		var out bytes.Buffer
+		printState(&out, st)
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("printState(%+v) lacks %q:\n%s", st, want, out.String())
+		}
+	}
+}

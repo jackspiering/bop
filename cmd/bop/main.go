@@ -139,7 +139,12 @@ func printState(w io.Writer, st server.State) {
 	}
 	fmt.Fprintf(w, "mode:        %s\n", st.Mode)
 	fmt.Fprintf(w, "health:      %s\n", health)
+	stickyMode := st.StickyMode
+	if stickyMode == "" {
+		stickyMode = "(none)"
+	}
 	fmt.Fprintf(w, "sticky:      %t\n", st.Sticky)
+	fmt.Fprintf(w, "sticky_mode: %s\n", stickyMode)
 	fmt.Fprintf(w, "instance_id: %s\n", st.InstanceID)
 	fmt.Fprintf(w, "pid:         %d\n", st.PID)
 	fmt.Fprintf(w, "started_at:  %s\n", st.StartedAt)
