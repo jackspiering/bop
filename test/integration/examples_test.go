@@ -199,4 +199,26 @@ func TestExamplesRun(t *testing.T) {
 		}
 		waitHealth(t, p.container("bop"), "healthy", 40*time.Second)
 	})
+
+	t.Run("state-dir", func(t *testing.T) {
+		t.Parallel()
+		p := upExample(t, "state-dir", "bop")
+		c := p.container("bop")
+		waitHealth(t, c, "healthy", 40*time.Second)
+		mustExec(t, c, "bop", "unhealthy", "sticky=true")
+		waitHealth(t, c, "unhealthy", 30*time.Second)
+
+		// The volume outlives the container, so the mode survives a recreate.
+		if out, err := p.run(2*time.Minute, "up", "-d", "--force-recreate"); err != nil {
+			t.Fatalf("recreate: %v\n%s", err, out)
+		}
+		c2 := p.container("bop")
+		if c2 == c {
+			t.Fatal("compose did not recreate the container")
+		}
+		waitHealth(t, c2, "unhealthy", 40*time.Second)
+		if out := mustExec(t, c2, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+			t.Fatalf("status:\n%s", out)
+		}
+	})
 }

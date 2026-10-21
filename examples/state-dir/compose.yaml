@@ -1,0 +1,27 @@
+# BOP_STATE_DIR on a named volume: the sticky mode lasts as long as the
+# volume, so it survives a recreate too.
+#   docker compose exec bop bop unhealthy sticky=true
+#   docker compose up -d --force-recreate bop   # still unhealthy: same volume
+#   docker compose exec bop bop clear           # healthy, sticky file removed
+#   docker compose down -v                      # drops the volume
+# The volume is mounted over the image's /tmp/bop, so Docker copies that
+# directory's permissions (writable by any UID) into it. A new volume on a
+# path that is not in the image is root-owned, and bop cannot write to it.
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_STATE_DIR: /tmp/bop/state
+    volumes:
+      - state:/tmp/bop
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/bop", "healthcheck"]
+      interval: 2s
+      timeout: 2s
+      start_period: 0s
+      retries: 2
+
+volumes:
+  state:

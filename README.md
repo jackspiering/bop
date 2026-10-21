@@ -110,7 +110,8 @@ lasts exactly as long as that directory:
   `docker run --read-only --tmpfs /tmp`) and Podman `--read-only`, which adds
   a tmpfs on `/tmp` by default. The sticky write succeeds, and bop cannot tell
   that it will not last.
-- **Volume:** a volume on `BOP_STATE_DIR` survives recreates too.
+- **Volume:** a volume on `BOP_STATE_DIR` survives recreates too. See
+  [`examples/state-dir`](examples/state-dir/compose.yaml).
 - **Orchestrators that replace the container on restart** (Swarm, Kubernetes)
   start a fresh layer every time. Put `BOP_STATE_DIR` on a volume, such as a
   Kubernetes `emptyDir`, to keep the mode across container restarts.
@@ -164,6 +165,7 @@ Every example uses `${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}`.
 | `BOP_ADDR`, `BOP_CONTROL_ADDR` | [`examples/custom-addr`](examples/custom-addr/compose.yaml) |
 | sidecar | [`examples/sidecar`](examples/sidecar/compose.yaml) |
 | sticky | [`examples/restart-vs-recreate`](examples/restart-vs-recreate/compose.yaml) |
+| `BOP_STATE_DIR` (sticky on a volume) | [`examples/state-dir`](examples/state-dir/compose.yaml) |
 
 The distroless image has no shell, so write healthchecks in exec form
 (`test: ["CMD", "/bop", "healthcheck"]`). `docker run --health-cmd` always uses

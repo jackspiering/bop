@@ -668,6 +668,50 @@ func TestClearOnReadOnlyRoot(t *testing.T) {
 	}
 }
 
+// hasFile reports whether path exists in container c (distroless has no
+// shell, so ask docker cp).
+func hasFile(c, path string) bool {
+	_, err := dockerCtx(30*time.Second, "cp", c+":"+path, "-")
+	return err == nil
+}
+
+func TestStateDir(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, env("BOP_STATE_DIR", "/tmp/bop/custom"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if !hasFile(c, "/tmp/bop/custom/mode") || hasFile(c, "/tmp/bop/mode") {
+		t.Fatal("the sticky file must be at $BOP_STATE_DIR/mode and only there")
+	}
+
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+
+	mustExec(t, c, "bop", "clear")
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if hasFile(c, "/tmp/bop/custom/mode") {
+		t.Fatal("bop clear left $BOP_STATE_DIR/mode behind")
+	}
+}
+
+func TestStateDirUnwritable(t *testing.T) {
+	t.Parallel()
+	// uid 65532 cannot create a directory in /.
+	c := run(t, cat(fastHealth, env("BOP_STATE_DIR", "/bop-state"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	code, out := execCode(t, c, "bop", "unhealthy", "sticky=true")
+	if code == 0 || !strings.Contains(out, "/bop-state") || !strings.Contains(out, "BOP_STATE_DIR") {
+		t.Fatalf("exec = %d\n%s", code, out)
+	}
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        healthy") {
+		t.Fatalf("a failed sticky write must not change the mode:\n%s", out)
+	}
+}
+
 func instanceID(t *testing.T, c string) string {
 	t.Helper()
 	for _, line := range strings.Split(mustExec(t, c, "bop", "status"), "\n") {
