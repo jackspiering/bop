@@ -27,9 +27,10 @@ docker inspect -f '{{.State.Health.Status}}' bop   # unhealthy, after a few prob
 docker exec bop bop healthy               # and back
 ```
 
-The healthcheck in the image uses `--start-interval`, which needs **Docker
-Engine 25.0 or later** (older engines reject the image's `HEALTHCHECK`; on
-those, override it).
+The image's `HEALTHCHECK` uses `--start-interval`, so **building** it needs
+Dockerfile frontend 1.6 or later (Docker Engine 25.0+, or `docker buildx` with
+a current BuildKit). The published image also **runs** on older engines; they
+ignore the 1s start interval and probe every 5s from the start.
 
 ## One grammar
 
@@ -282,7 +283,9 @@ go test -tags integration -timeout 15m ./test/integration/   # needs Docker
 
 The integration tests build `bop:test`, drive real Docker through the `docker`
 CLI and assert on `docker inspect` (health, exit code, `OOMKilled`, restart
-count). They need Docker Engine 25.0+ and cgroup v2.
+count). They need Docker Engine 25.0+ (to build the image), Docker Compose
+2.18+ (the example tests drop published ports with `!reset`) and cgroup v2
+(for `oom`).
 
 ## Maintainer: one-time steps
 

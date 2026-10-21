@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,11 +44,38 @@ func upExample(t *testing.T, name string, portServices ...string) *composeProjec
 		args = append(args, "-f", override)
 	}
 	p := &composeProject{t: t, args: args, env: append(os.Environ(), "BOP_IMAGE="+image)}
+	p.requirePortsReset(portServices)
 	t.Cleanup(func() { _, _ = p.run(2*time.Minute, "down", "-v", "-t", "1") })
 	if out, err := p.run(2*time.Minute, "up", "-d"); err != nil {
 		t.Fatalf("compose up: %v\n%s", err, out)
 	}
 	return p
+}
+
+// requirePortsReset fails fast when Compose ignored the !reset override (it
+// needs Compose 2.18+), instead of letting parallel examples collide on 8080.
+func (p *composeProject) requirePortsReset(services []string) {
+	p.t.Helper()
+	if len(services) == 0 {
+		return
+	}
+	out, err := p.run(time.Minute, "config", "--format", "json")
+	if err != nil {
+		p.t.Fatalf("compose config: %v\n%s", err, out)
+	}
+	var cfg struct {
+		Services map[string]struct {
+			Ports []json.RawMessage `json:"ports"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		p.t.Fatalf("decode compose config: %v\n%s", err, out)
+	}
+	for _, s := range services {
+		if n := len(cfg.Services[s].Ports); n > 0 {
+			p.t.Fatalf("service %s still publishes %d port(s) after `ports: !reset []`; the example tests need Docker Compose 2.18 or later", s, n)
+		}
+	}
 }
 
 func (p *composeProject) run(timeout time.Duration, args ...string) (string, error) {

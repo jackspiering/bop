@@ -14,8 +14,9 @@ go test -tags integration -timeout 15m ./test/integration/   # needs Docker
 
 The integration tests build `bop:test` from the working tree, drive real Docker
 through the `docker` CLI and assert on `docker inspect`. They need Docker
-Engine 25.0 or later (for `--start-interval`), Docker Compose v2 and cgroup v2
-(for `oom`). They take about a minute.
+Engine 25.0+ (to build the image), Docker Compose 2.18+ (the example tests drop
+published ports with `!reset`) and cgroup v2 (for `oom`). They take about a
+minute.
 
 ## Changes
 
