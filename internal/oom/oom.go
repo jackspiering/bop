@@ -158,9 +158,10 @@ const (
 )
 
 // plan splits one tick's allocation at rate MiB/s into count chunks of size
-// chunk, rounded up.
+// chunk, rounded up. rate is at least 1 (mode.Parse), so a tick is at least
+// 100 KiB.
 func plan(rate int) (chunk, count int) {
-	perTick := max(rate*mib/ticks, pageSize)
+	perTick := rate * mib / ticks
 	chunk = min(perTick, maxChunk)
 	return chunk, (perTick + chunk - 1) / chunk
 }

@@ -63,12 +63,15 @@ func TestMachineHealth(t *testing.T) {
 	}
 }
 
-func TestMachineChangedBroadcast(t *testing.T) {
+func TestMachineWatchBroadcast(t *testing.T) {
 	mc := NewMachine(Hooks{})
-	ch := mc.Changed()
+	name, ch := mc.Watch()
+	if name != Healthy {
+		t.Fatalf("Watch name = %q, want %q", name, Healthy)
+	}
 	select {
 	case <-ch:
-		t.Fatal("Changed closed before any Set")
+		t.Fatal("Watch channel closed before any Set")
 	default:
 	}
 	if err := mc.Set(Mode{Name: Hang}, 0); err != nil {
@@ -77,10 +80,10 @@ func TestMachineChangedBroadcast(t *testing.T) {
 	select {
 	case <-ch:
 	case <-time.After(time.Second):
-		t.Fatal("Changed not closed by Set")
+		t.Fatal("Watch channel not closed by Set")
 	}
-	if next := mc.Changed(); next == ch {
-		t.Fatal("Changed should return a fresh channel after a Set")
+	if name, next := mc.Watch(); name != Hang || next == ch {
+		t.Fatalf("Watch after Set = %q (fresh channel: %v), want %q and a fresh channel", name, next != ch, Hang)
 	}
 }
 

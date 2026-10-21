@@ -171,10 +171,9 @@ func (s *Server) DataHandler() http.Handler {
 // goes away first it aborts the request, so nothing is ever written.
 func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		for s.Machine.Snapshot().Mode.Name == mode.Hang {
-			changed := s.Machine.Changed()
-			// Re-check after taking the channel so a switch in between is not missed.
-			if s.Machine.Snapshot().Mode.Name != mode.Hang {
+		for {
+			name, changed := s.Machine.Watch()
+			if name != mode.Hang {
 				break
 			}
 			select {
