@@ -25,8 +25,9 @@ const (
 )
 
 // fastHealth shortens the probe timings while keeping the image's own test
-// command (docker merges these flags with the image HEALTHCHECK).
-var fastHealth = []string{"--health-interval=1s", "--health-timeout=2s", "--health-retries=2", "--health-start-period=0s"}
+// command (docker merges these flags with the image HEALTHCHECK). The start
+// period is 1ms, not 0s: Docker reads 0 as unset and inherits the image's 10s.
+var fastHealth = []string{"--health-interval=1s", "--health-timeout=2s", "--health-retries=2", "--health-start-period=1ms"}
 
 func TestMain(m *testing.M) {
 	root, err := repoRoot()
@@ -255,6 +256,16 @@ func TestImageMetadata(t *testing.T) {
 		if got := mustDocker(t, "image", "inspect", "-f", `{{index .Config.Labels "org.opencontainers.image.`+key+`"}}`, image); got == "" {
 			t.Errorf("label %s is empty", key)
 		}
+	}
+}
+
+// fastHealth must really replace the image's 10s start period: Docker treats
+// a zero start period as unset and inherits the image's value.
+func TestFastHealthOverridesStartPeriod(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	if got := inspect(t, c, "{{.Config.Healthcheck.StartPeriod}}"); got != "1ms" {
+		t.Fatalf("StartPeriod = %s, want 1ms", got)
 	}
 }
 
@@ -1105,6 +1116,29 @@ func TestSidecarSharesParentNetworkNamespace(t *testing.T) {
 	})
 }
 
+// TestSidecarUnhealthyWhileParentHangs: the sidecar's /info probe also fails
+// while the parent hangs, although the namespace is still shared.
+func TestSidecarUnhealthyWhileParentHangs(t *testing.T) {
+	t.Parallel()
+	parent := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, parent, "healthy", 30*time.Second)
+	sidecar := run(t, "--network", "container:"+parent, sidecarImage, "sidecar", "--target=http://127.0.0.1:8080", "--interval=500ms")
+	waitHealth(t, sidecar, "healthy", 30*time.Second)
+	before := inspect(t, parent, "{{.State.Pid}} {{.RestartCount}}")
+
+	mustExec(t, parent, "bop", "hang")
+	waitHealth(t, sidecar, "unhealthy", 40*time.Second)
+	waitFor(t, sidecar, 20*time.Second, "unreachable log", func() bool {
+		return strings.Contains(logs(sidecar), "target unreachable")
+	})
+	if after := inspect(t, parent, "{{.State.Pid}} {{.RestartCount}}"); after != before {
+		t.Fatalf("parent restarted (%s -> %s); the test needs the same namespace", before, after)
+	}
+
+	mustExec(t, parent, "bop", "healthy")
+	waitHealth(t, sidecar, "healthy", 30*time.Second)
+}
+
 func TestSidecarLogsInstanceIDChange(t *testing.T) {
 	t.Parallel()
 	netName := uniqueName(t)
@@ -1124,6 +1158,31 @@ func TestSidecarLogsInstanceIDChange(t *testing.T) {
 		l := logs(sidecar)
 		return strings.Contains(l, "instance_id changed") || strings.Contains(l, "target reachable again")
 	})
+}
+
+// TestProbesIgnoreProxy: the sidecar and healthcheck probe the target
+// directly, even when HTTP_PROXY points at nothing.
+func TestProbesIgnoreProxy(t *testing.T) {
+	t.Parallel()
+	netName := uniqueName(t)
+	mustDocker(t, "network", "create", netName)
+	t.Cleanup(func() { _, _ = dockerCtx(time.Minute, "network", "rm", netName) })
+
+	parent := run(t, "--network", netName, "--network-alias", "parent", image)
+	waitHealth(t, parent, "healthy", 30*time.Second)
+	sidecar := run(t, "--network", netName, "-e", "HTTP_PROXY=http://127.0.0.1:9", "-e", "http_proxy=http://127.0.0.1:9",
+		"--no-healthcheck", image, "sidecar", "--target=http://parent:8080", "--interval=300ms")
+	waitFor(t, sidecar, 20*time.Second, "target reachable", func() bool {
+		return strings.Contains(logs(sidecar), "target reachable")
+	})
+	if l := logs(sidecar); strings.Contains(l, "target unreachable") {
+		t.Fatalf("sidecar went through the proxy:\n%s", l)
+	}
+	// docker exec inherits the container's HTTP_PROXY.
+	code, out := execCode(t, sidecar, "bop", "healthcheck", "--url=http://parent:8080/healthz")
+	if code != 0 {
+		t.Fatalf("healthcheck through HTTP_PROXY = %d: %s", code, out)
+	}
 }
 
 func TestExamplesComposeConfig(t *testing.T) {

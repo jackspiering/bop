@@ -25,9 +25,14 @@ Usage:
   bop <mode> [key=value ...]       switch the running process (docker exec <c> bop ...)
   bop clear                        back to healthy and remove the sticky mode
   bop status                       print the running process's state
-  bop healthcheck [--url=URL]      exit 0 if URL (default: own /healthz) returns 2xx
-  bop sidecar --target=URL         watch another bop's /info; binds nothing
+  bop healthcheck [--url=URL]      exit 0 if URL returns 2xx, else 1 (default URL:
+                                   /healthz on BOP_ADDR's host and port, 127.0.0.1
+                                   for an empty or wildcard host)
+  bop sidecar --target=URL [--interval=2s]
+                                   watch another bop's /info; binds nothing
   bop version
+  bop help
+Invalid input exits 2. Probes go direct: no proxy, and a redirect is a failure.
 
 Modes:
   healthy
@@ -64,19 +69,30 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		}
 		return serve(stderr, getenv)
 	case "status":
+		if len(args) > 1 {
+			return usageError(stderr, "%s takes no arguments, got %q", args[0], args[1:])
+		}
 		return execCommand(stdout, stderr, getenv, "")
 	case "healthcheck":
 		return healthcheck(args[1:], stderr, getenv)
 	case "sidecar":
 		return sidecar(args[1:], stderr)
 	case "version", "--version":
+		if len(args) > 1 {
+			return usageError(stderr, "%s takes no arguments, got %q", args[0], args[1:])
+		}
 		fmt.Fprintf(stdout, "bop %s\n", version)
 		return 0
 	case "help", "-h", "--help":
+		// Deliberately lenient: `bop help <anything>` prints the usage.
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
-	return execCommand(stdout, stderr, getenv, strings.Join(args, " "))
+	spec := strings.Join(args, " ")
+	if _, err := mode.ParseCommand(spec); err != nil {
+		return usageError(stderr, "%v", err)
+	}
+	return execCommand(stdout, stderr, getenv, spec)
 }
 
 func usageError(stderr io.Writer, format string, args ...any) int {
@@ -84,13 +100,10 @@ func usageError(stderr io.Writer, format string, args ...any) int {
 	return 2
 }
 
-// execCommand sends spec to the running process. An empty spec asks for status.
+// execCommand sends spec, already validated by mode.ParseCommand, to the
+// running process. An empty spec asks for status; run never passes an empty
+// spec otherwise, because ParseCommand rejects it.
 func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec string) int {
-	if spec != "" {
-		if _, err := mode.ParseCommand(spec); err != nil {
-			return usageError(stderr, "%v", err)
-		}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -99,7 +112,7 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 	if err != nil {
 		return usageError(stderr, "%v", err)
 	}
-	client := server.NewClient(addr)
+	client := server.NewClient(addr, newProbeClient(5*time.Second))
 	var st server.State
 	if spec == "" {
 		st, err = client.Status(ctx)
@@ -131,7 +144,12 @@ func printState(w io.Writer, st server.State) {
 	}
 	fmt.Fprintf(w, "mode:        %s\n", st.Mode)
 	fmt.Fprintf(w, "health:      %s\n", health)
+	stickyMode := st.StickyMode
+	if stickyMode == "" {
+		stickyMode = "(none)"
+	}
 	fmt.Fprintf(w, "sticky:      %t\n", st.Sticky)
+	fmt.Fprintf(w, "sticky_mode: %s\n", stickyMode)
 	fmt.Fprintf(w, "instance_id: %s\n", st.InstanceID)
 	fmt.Fprintf(w, "pid:         %d\n", st.PID)
 	fmt.Fprintf(w, "started_at:  %s\n", st.StartedAt)

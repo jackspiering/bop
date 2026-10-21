@@ -32,6 +32,6 @@ COPY --from=build /out/usr/ /usr/
 COPY --from=build --chown=65532:65532 /out/tmp/ /tmp/
 USER 65532:65532
 EXPOSE 8080
-# --start-interval needs Docker Engine 25.0 or later.
+# --start-interval needs Dockerfile frontend 1.6+ (Engine 25.0+) to build; older engines ignore it at run time.
 HEALTHCHECK --interval=5s --timeout=2s --start-period=10s --start-interval=1s --retries=3 CMD ["/bop","healthcheck"]
 ENTRYPOINT ["/bop"]

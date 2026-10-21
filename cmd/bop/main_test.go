@@ -34,9 +34,17 @@ func TestRunUsageErrorsExit2(t *testing.T) {
 		{"healthcheck", "--bogus"},
 		{"sidecar"},
 		{"sidecar", "--target=not-a-url"},
+		{"status", "x"},
+		{"status", "sticky=true"},
+		{"version", "x"},
+		{"--version", "x"},
+		{""},
+		{"clear", "sticky=true"},
+		{"clear", "sticky=false"},
 	} {
 		var out, errb bytes.Buffer
-		if code := run(args, &out, &errb, env(nil)); code != 2 {
+		// An unreachable control address: a network call would fail with 1, not 2.
+		if code := run(args, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": "127.0.0.1:1"})); code != 2 {
 			t.Errorf("run(%v) = %d, want 2 (stderr %q)", args, code, errb.String())
 		}
 		if errb.Len() == 0 {
@@ -48,7 +56,7 @@ func TestRunUsageErrorsExit2(t *testing.T) {
 func TestRunUsageMentionsModes(t *testing.T) {
 	var out, errb bytes.Buffer
 	run([]string{"explode"}, &out, &errb, env(nil))
-	for _, want := range []string{"unknown mode", "Usage:", "crash-loop", "BOP_ON_SIGTERM"} {
+	for _, want := range []string{"unknown mode", "Usage:", "crash-loop", "BOP_ON_SIGTERM", "--interval", "bop help"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("usage message lacks %q:\n%s", want, errb.String())
 		}
@@ -63,6 +71,20 @@ func TestRunVersionAndHelp(t *testing.T) {
 	out.Reset()
 	if code := run([]string{"help"}, &out, &errb, env(nil)); code != 0 || !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("help = %d", code)
+	}
+	// help stays lenient: anything after it still prints the usage and exits 0.
+	for _, args := range [][]string{{"help", "crash"}, {"-h", "x"}, {"--help", "x", "y"}} {
+		out.Reset()
+		if code := run(args, &out, &errb, env(nil)); code != 0 || !strings.Contains(out.String(), "Usage:") {
+			t.Errorf("run(%v) = %d, want 0 with usage", args, code)
+		}
+	}
+	// -h on a subcommand is a request for help too: flag help on stderr, exit 0.
+	for _, args := range [][]string{{"healthcheck", "-h"}, {"sidecar", "--help"}} {
+		errb.Reset()
+		if code := run(args, &out, &errb, env(nil)); code != 0 || !strings.Contains(errb.String(), "Usage of") {
+			t.Errorf("run(%v) = %d, want 0 with flag help (stderr %q)", args, code, errb.String())
+		}
 	}
 }
 
@@ -591,5 +613,66 @@ func TestBootMode(t *testing.T) {
 	}
 	if _, err := bootMode(mode.Store{Dir: notDir}, mode.Mode{Name: mode.Hang, Sticky: true}, nil, log); err == nil {
 		t.Error("bootMode with an unwritable state dir succeeded")
+	}
+}
+
+// redirectingServer returns a server that redirects every request to a
+// server that answers 200.
+func redirectingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"instance_id":"abc"}`))
+	}))
+	t.Cleanup(target.Close)
+	redir := httptest.NewServer(http.RedirectHandler(target.URL+"/info", http.StatusFound))
+	t.Cleanup(redir.Close)
+	return redir
+}
+
+func TestHealthcheckDoesNotFollowRedirects(t *testing.T) {
+	ts := redirectingServer(t)
+	var errb bytes.Buffer
+	if code := healthcheck([]string{"--url=" + ts.URL}, &errb, env(nil)); code != 1 {
+		t.Fatalf("302 -> %d, want 1 (stderr %q)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "302") {
+		t.Errorf("stderr should name the 302: %q", errb.String())
+	}
+}
+
+func TestPollDoesNotFollowRedirects(t *testing.T) {
+	ts := redirectingServer(t)
+	if id, err := poll(context.Background(), newProbeClient(time.Second), ts.URL+"/info"); err == nil {
+		t.Fatalf("poll followed the redirect: id %q", id)
+	}
+}
+
+func TestProbeClientIgnoresProxyEnvironment(t *testing.T) {
+	c := newProbeClient(time.Second)
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", c.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Fatal("probe transport must not use a proxy")
+	}
+	if tr == http.DefaultTransport {
+		t.Fatal("probe transport must be a clone, not http.DefaultTransport")
+	}
+	if c.Timeout != time.Second {
+		t.Fatalf("Timeout = %s", c.Timeout)
+	}
+}
+
+func TestPrintStateStickyMode(t *testing.T) {
+	for want, st := range map[string]server.State{
+		"sticky_mode: (none)\n":                         {},
+		"sticky_mode: unhealthy after=0s sticky=true\n": {Info: server.Info{StickyMode: "unhealthy after=0s sticky=true"}},
+	} {
+		var out bytes.Buffer
+		printState(&out, st)
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("printState(%+v) lacks %q:\n%s", st, want, out.String())
+		}
 	}
 }

@@ -20,7 +20,8 @@ services:
       test: ["CMD", "/bop", "healthcheck"]
       interval: 2s
       timeout: 2s
-      start_period: 0s
+      # 1ms, not 0s: Docker reads 0s as unset and inherits the image's 10s.
+      start_period: 1ms
       retries: 2
 
 volumes:

@@ -81,6 +81,9 @@ func ParseCommand(s string) (Mode, error) {
 	if !ok {
 		return Mode{}, usagef("unknown mode %q; expected one of: %s", name, strings.Join(Names, ", "))
 	}
+	if name == Clear && len(fields) > 1 {
+		return Mode{}, usagef("%q takes no arguments, got %q", Clear, fields[1:])
+	}
 
 	m := Mode{Name: name}
 	switch name {

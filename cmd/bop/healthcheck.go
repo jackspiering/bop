@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -10,6 +11,21 @@ import (
 )
 
 const healthcheckTimeout = 1500 * time.Millisecond
+
+// newProbeClient returns a client that probes exactly the URL it is given: it
+// ignores HTTP_PROXY, HTTPS_PROXY and NO_PROXY, and does not follow
+// redirects, so a 3xx is reported as the response (and fails a probe).
+func newProbeClient(timeout time.Duration) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	return &http.Client{
+		Transport: tr,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
 
 // defaultHealthURL points at the local data listener derived from BOP_ADDR,
 // which it parses exactly as the listener does.
@@ -28,8 +44,11 @@ func defaultHealthURL(addr string) (string, error) {
 func healthcheck(args []string, stderr io.Writer, getenv func(string) string) int {
 	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	url := fs.String("url", "", "URL to probe (default: http://127.0.0.1:<port of BOP_ADDR>/healthz)")
+	url := fs.String("url", "", "URL to probe (default: http://<host of BOP_ADDR>:<port>/healthz, 127.0.0.1 for an empty or unspecified host)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() > 0 {
@@ -43,8 +62,7 @@ func healthcheck(args []string, stderr io.Writer, getenv func(string) string) in
 		*url = u
 	}
 
-	client := http.Client{Timeout: healthcheckTimeout}
-	resp, err := client.Get(*url)
+	resp, err := newProbeClient(healthcheckTimeout).Get(*url)
 	if err != nil {
 		fmt.Fprintf(stderr, "bop healthcheck: %v\n", err)
 		return 1

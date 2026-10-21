@@ -79,8 +79,10 @@ func TestParseCommandClear(t *testing.T) {
 	if err != nil || m.Name != Clear {
 		t.Fatalf("ParseCommand(clear) = %+v, %v", m, err)
 	}
-	if _, err := ParseCommand("clear after=1s"); err == nil {
-		t.Fatal("clear with arguments should fail")
+	for _, in := range []string{"clear after=1s", "clear sticky=true", "clear sticky=false"} {
+		if _, err := ParseCommand(in); err == nil {
+			t.Errorf("ParseCommand(%q) should fail: clear takes no arguments", in)
+		}
 	}
 }
 

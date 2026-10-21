@@ -27,14 +27,19 @@ docker inspect -f '{{.State.Health.Status}}' bop   # unhealthy, after a few prob
 docker exec bop bop healthy               # and back
 ```
 
-The healthcheck in the image uses `--start-interval`, which needs **Docker
-Engine 25.0 or later** (older engines reject the image's `HEALTHCHECK`; on
-those, override it).
+The image's `HEALTHCHECK` uses `--start-interval`, so **building** it needs
+Dockerfile frontend 1.6 or later (Docker Engine 25.0+, or `docker buildx` with
+a current BuildKit). The published image also **runs** on older engines; they
+ignore the 1s start interval and probe every 5s from the start.
 
 ## One grammar
 
 Boot and runtime use the same grammar: `<mode> [key=value ...]`. Durations are
-Go durations (`500ms`, `10s`, `2m`). Invalid input exits `2` with a usage message.
+Go durations (`500ms`, `10s`, `2m`). Invalid input exits `2`. Errors the CLI
+catches itself (grammar, arguments, `BOP_*` variables) also print the usage
+text, and a bad flag prints the command's flags. A command the running process
+rejects (a non-sticky `crash-loop`, a refused `oom`) prints only
+`bop: <reason>`.
 
 ```sh
 docker run -e BOP_MODE="crash exit=3 after=10s" ghcr.io/jackspiering/bop:edge   # at boot
@@ -68,9 +73,15 @@ a runtime switch.
 | `bop` / `bop serve` | The main process. |
 | `bop status` | Print the running process's state. |
 | `bop clear` | Back to `healthy` and remove the sticky mode. |
-| `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, else 1. Default `http://127.0.0.1:<port of BOP_ADDR>/healthz`, 1.5s timeout. |
-| `bop sidecar --target=URL [--interval=2s]` | See [Sidecar](#sidecar). |
+| `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, 1 otherwise, 2 on bad arguments or an invalid `BOP_ADDR`. Default `http://<host of BOP_ADDR>:<port>/healthz`, with `127.0.0.1` when the host is empty or unspecified (`0.0.0.0`, `::`); 1.5s timeout. Probes go direct (see below). |
+| `bop sidecar --target=URL [--interval=2s]` | See [Sidecar](#sidecar). Exits 2 on bad arguments. |
 | `bop version` | |
+| `bop help` | Print the usage text. `-h` on `healthcheck` or `sidecar` prints its flags. Both exit 0. |
+
+The probes (`bop healthcheck`, `bop sidecar`) and the CLI's control client go
+direct to the URL they are given: they ignore `HTTP_PROXY`, `HTTPS_PROXY` and
+`NO_PROXY`, and they do not follow redirects, so a `3xx` counts as a failure.
+A proxy's own error or a redirect is never mistaken for the target's state.
 
 ### Knobs (environment, boot only)
 
@@ -79,7 +90,7 @@ a runtime switch.
 | `BOP_MODE` | `healthy` | Initial mode, same grammar as above. |
 | `BOP_START_DELAY` | `0` | Don't bind the data listener until this has passed. The control listener binds immediately. The boot mode starts at process start, not when the delay ends: `after` and `interval` include the delay, a `crash`/`crash-loop` that fires within the delay exits before the data listener binds, and `oom` allocates during the delay. |
 | `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly. Until that handler is installed the Go runtime exits 143 (SIGTERM) or 130 (SIGINT), including as PID 1; a short window remains during process startup. |
-| `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows its port. |
+| `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows it: same host and port, with `127.0.0.1` for an empty or unspecified host. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener, `[host]:port`. A bare port is refused here: `:<port>` would expose the mode-switching API to the network, so it has to be written out; use `127.0.0.1:<port>` to keep it local. `docker exec` inherits it from the container's environment. |
 | `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. A sticky mode lasts exactly as long as this directory; see [Sticky](#sticky-restart-vs-recreate). |
 | `BOP_OOM_UNSAFE` | | `1` skips the `oom` guard (no limit, a limit at or above host memory, unlimited swap). It can take the host down. |
@@ -88,7 +99,10 @@ a runtime switch.
 
 - `GET /healthz`: `200 ok`, or `503` with a short reason.
 - `GET /info`: JSON with `instance_id` (random per process start), `pid`,
-  `hostname`, `started_at`, `mode`, `sticky`, `version`.
+  `hostname`, `started_at`, `mode`, `sticky` (whether the running mode is
+  sticky), `sticky_mode` (the mode stored in the sticky file, which the next
+  restart boots into; omitted when there is none, `invalid: <reason>` when the
+  file cannot be used) and `version`. `/healthz` never reads the sticky file.
 - Control listener (`BOP_CONTROL_ADDR`): a small JSON API (`GET /status`,
   `POST /mode` with `{"mode":"<command>"}`, including `clear`) used by the CLI only.
   **Caveat:** anything that shares the container's network namespace can reach
@@ -128,7 +142,9 @@ the container.
 
 On start, a sticky file overrides `BOP_MODE`. `bop healthy sticky=true` and
 `bop clear` remove it. A non-sticky switch does not touch the file, so the
-sticky mode returns on the next restart. With a read-only root and no writable
+sticky mode returns on the next restart. `bop status` (`sticky_mode:`) and
+`/info` (`sticky_mode`) show the stored mode, so you can tell whether a restart
+will bring the failure back. With a read-only root and no writable
 mount on `BOP_STATE_DIR`, bop reports the write failure and leaves the mode
 unchanged. `bop clear` and `bop healthy sticky=true` still return to `healthy`
 on a read-only root, since there is no sticky file to remove. Note that
@@ -145,14 +161,32 @@ docker rm -f bop && docker run ...      # healthy again
 
 `bop sidecar --target=http://127.0.0.1:8080` binds nothing. It idles, handles
 signals, polls the target's `/info` (a bare URL gets `/info` appended) and logs
-when the target becomes unreachable or its `instance_id` changes.
+when the target becomes unreachable or its `instance_id` changes. It polls the
+target directly, ignoring `HTTP(S)_PROXY`, and treats a redirect as
+unreachable.
 
-In a sidecar on `network_mode: service:<parent>` (or `container:`), its
-healthcheck is `bop healthcheck --url=http://127.0.0.1:8080/info`, which proves
-it still shares the parent's network namespace. When the parent restarts, the
-sidecar keeps the old namespace, the probe fails and the sidecar goes
-unhealthy. That makes a handy test for tools that must also restart or
+In a sidecar on `network_mode: service:<parent>` (or `container:`), give it
+the healthcheck `bop healthcheck --url=http://127.0.0.1:8080/info`, which
+proves it still shares the parent's network namespace. When the parent
+restarts, the sidecar keeps the old namespace, the probe fails and the sidecar
+goes unhealthy. That makes a handy test for tools that must also restart or
 re-attach dependents. See [`examples/sidecar`](examples/sidecar/compose.yaml).
+
+The image's own `HEALTHCHECK` (`bop healthcheck`, the local `/healthz`) also
+applies to `bop sidecar`, which serves nothing:
+
+- In a shared namespace without the `/info` override, the sidecar probes the
+  parent's `/healthz`, so `bop unhealthy` on the parent makes the sidecar
+  unhealthy too. Override it as shown.
+- Outside a shared namespace (for example `--target=http://parent:8080` on a
+  user network), the sidecar is always unhealthy while working fine. Disable
+  the healthcheck there (`healthcheck: {disable: true}`, `--no-healthcheck`).
+
+With the `/info` override, a failing probe does not by itself mean the
+namespace was lost. It also fails while the parent is in `hang` (`/info`
+hangs too, and the sidecar logs "target unreachable"), before the parent's
+data listener binds (`BOP_START_DELAY`), and while the parent is down.
+`unhealthy` mode on the parent does not affect it.
 
 ## Compose examples
 
@@ -254,7 +288,9 @@ go test -tags integration -timeout 15m ./test/integration/   # needs Docker
 
 The integration tests build `bop:test`, drive real Docker through the `docker`
 CLI and assert on `docker inspect` (health, exit code, `OOMKilled`, restart
-count). They need Docker Engine 25.0+ and cgroup v2.
+count). They need Docker Engine 25.0+ (to build the image), Docker Compose
+2.18+ (the example tests drop published ports with `!reset`) and cgroup v2
+(for `oom`).
 
 ## Maintainer: one-time steps
 
