@@ -23,6 +23,16 @@ Engine 25.0 or later (for `--start-interval`), Docker Compose v2 and cgroup v2
   an `examples/<name>/compose.yaml` that `TestExamplesRun` brings up.
 - Pin GitHub Actions to a full commit SHA with the version as a trailing
   comment, and base images by digest. Dependabot keeps both current.
+- The build tools are pinned by digest by hand, because Dependabot does not
+  track them: the BuildKit daemon (`driver-opts: image=moby/buildkit:...` on
+  every `setup-buildx-action`, the same reference in `ci.yml` and
+  `publish.yml`) and the SBOM scanner
+  (`sbom: generator=docker/buildkit-syft-scanner:...` in `publish.yml`). To
+  bump one, pick a release tag, run `docker buildx imagetools inspect
+  <image>:<tag>` and pin `<image>:<tag>@sha256:<index digest>`.
+  `go test ./test/release/` fails if either is unpinned. Do not add a
+  `# syntax=` line to the Dockerfile: the pinned daemon's built-in frontend
+  is used.
 - Workflows default to `permissions: contents: read`; widen per job only.
 - Open a pull request against `main`. The four CI checks must pass.
 
