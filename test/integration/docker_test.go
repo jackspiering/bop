@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -324,9 +325,19 @@ func TestImageMetadata(t *testing.T) {
 			t.Errorf("%s = %q, want %q", format, got, want)
 		}
 	}
-	for _, key := range []string{"revision", "created", "version"} {
-		if got := mustDocker(t, "image", "inspect", "-f", `{{index .Config.Labels "org.opencontainers.image.`+key+`"}}`, image); got == "" {
-			t.Errorf("label %s is empty", key)
+	// A local build has no VERSION build arg. publish.yml sets revision and
+	// created through metadata-action, so a local build has neither label
+	// (rather than a placeholder that looks like real provenance).
+	var labels map[string]string
+	if err := json.Unmarshal([]byte(mustDocker(t, "image", "inspect", "-f", "{{json .Config.Labels}}", image)), &labels); err != nil {
+		t.Fatal(err)
+	}
+	if got := labels["org.opencontainers.image.version"]; got != "dev" {
+		t.Errorf("label version = %q, want %q", got, "dev")
+	}
+	for _, key := range []string{"revision", "created"} {
+		if got, ok := labels["org.opencontainers.image."+key]; ok {
+			t.Errorf("label %s = %q, want it unset in a local build", key, got)
 		}
 	}
 }
