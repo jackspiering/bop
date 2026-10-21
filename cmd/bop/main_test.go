@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -245,6 +246,14 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.boot.Exit != 3 || cfg.startDelay != 2*time.Second || cfg.sigterm.Code != 7 || cfg.addr != ":9000" ||
 		cfg.controlAddr != "127.0.0.1:9902" || cfg.store.Dir != "/x" || !cfg.oomUnsafe {
 		t.Fatalf("config = %+v", cfg)
+	}
+
+	// A blank BOP_MODE means healthy, like an unset one.
+	for _, blank := range []string{"", " ", "\t"} {
+		cfg, err = loadConfig(env(map[string]string{"BOP_MODE": blank}))
+		if err != nil || cfg.boot.Name != mode.Healthy {
+			t.Errorf("BOP_MODE=%q: boot=%q, %v", blank, cfg.boot.Name, err)
+		}
 	}
 
 	// A bare data port means all interfaces.
@@ -553,17 +562,38 @@ func TestServeStickyOOMRefusedBeforePersist(t *testing.T) {
 		"BOP_CONTROL_ADDR": "127.0.0.1:0", "BOP_ADDR": "127.0.0.1:0",
 		"BOP_STATE_DIR": dir, "BOP_MODE": "oom sticky=true",
 	}))
-	if code != 2 || !strings.Contains(errb.String(), "no memory limit") {
-		t.Fatalf("code = %d, want 2 with the oom refusal\n%s", code, errb.String())
+	// A missing limit is a configuration mistake, so the usage text follows.
+	if code != 2 || !strings.Contains(errb.String(), "no memory limit") || !strings.Contains(errb.String(), "Usage:") {
+		t.Fatalf("code = %d, want 2 with the oom refusal and usage\n%s", code, errb.String())
 	}
 	if _, err := os.Stat(filepath.Join(dir, "mode")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a refused oom sticky=true persisted a sticky file: %v", err)
 	}
 }
 
+// An oom guard that cannot read the cgroup is an environment problem, not a
+// usage mistake: exit 2 with the remedy and no usage text.
+func TestServeOOMGuardFailureHasNoUsage(t *testing.T) {
+	old := checkOOMLimit
+	checkOOMLimit = func() error { return oom.Check(filepath.Join(t.TempDir(), "missing", "memory.max")) }
+	t.Cleanup(func() { checkOOMLimit = old })
+
+	for _, bootMode := range []string{"oom", "oom sticky=true"} {
+		dir := t.TempDir()
+		var out, errb bytes.Buffer
+		code := run(nil, &out, &errb, env(map[string]string{
+			"BOP_CONTROL_ADDR": "127.0.0.1:0", "BOP_ADDR": "127.0.0.1:0",
+			"BOP_STATE_DIR": dir, "BOP_MODE": bootMode,
+		}))
+		if code != 2 || !strings.Contains(errb.String(), "BOP_OOM_UNSAFE") || strings.Contains(errb.String(), "Usage:") {
+			t.Errorf("BOP_MODE=%q: code = %d, want 2 with the remedy and no usage\n%s", bootMode, code, errb.String())
+		}
+	}
+}
+
 func TestBootMode(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	noLimit := func() error { return errors.New("no memory limit") }
+	noLimit := func() error { return fmt.Errorf("%w: memory.max is \"max\"", oom.ErrNoLimit) }
 	for _, tc := range []struct {
 		name     string
 		stored   string // file content; "" means no file

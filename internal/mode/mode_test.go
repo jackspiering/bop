@@ -27,6 +27,7 @@ func TestParse(t *testing.T) {
 		{in: "oom rate=8", want: Mode{Name: OOM, Rate: 8}},
 		{in: "hang", want: Mode{Name: Hang}},
 		{in: "hang sticky=false", want: Mode{Name: Hang}},
+		{in: "hang sticky=1", want: Mode{Name: Hang, Sticky: true}},
 
 		{in: "", wantErr: "empty mode"},
 		{in: "   ", wantErr: "empty mode"},
@@ -42,7 +43,8 @@ func TestParse(t *testing.T) {
 		{in: "crash exit=x", wantErr: "0 to 255"},
 		{in: "unhealthy after=soon", wantErr: "invalid after"},
 		{in: "unhealthy after=5", wantErr: "invalid after"},
-		{in: "unhealthy after=-1s", wantErr: "must be positive"},
+		{in: "unhealthy after=-1s", wantErr: "must not be negative"},
+		{in: "crash-loop interval=-1s", wantErr: "must not be negative"},
 		{in: "crash-loop interval=0s", wantErr: "must be positive"},
 		{in: "oom rate=0", wantErr: "positive integer"},
 		{in: "oom rate=fast", wantErr: "positive integer"},

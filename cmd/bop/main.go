@@ -121,7 +121,7 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 	}
 	if err != nil {
 		var ae *server.APIError
-		if errors.As(err, &ae) && ae.Status == 400 {
+		if errors.As(err, &ae) && (ae.Status == 400 || ae.Status == 413) {
 			fmt.Fprintf(stderr, "bop: %v\n", err)
 			return 2
 		}

@@ -52,7 +52,9 @@ type ModeRequest struct {
 	Mode string `json:"mode"`
 }
 
-// ErrorBody is returned with every non-2xx control response.
+// ErrorBody is the body of every non-2xx response from the control handlers.
+// ServeMux's own 404 and 405 replies are plain text; the client then falls
+// back to the status line.
 type ErrorBody struct {
 	Error string `json:"error"`
 }
@@ -199,7 +201,12 @@ func (s *Server) ControlHandler(addr string) http.Handler {
 	mux.HandleFunc("POST /mode", func(w http.ResponseWriter, r *http.Request) {
 		var req ModeRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, errors.New("invalid request body: "+err.Error()))
+			status := http.StatusBadRequest
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			writeError(w, status, errors.New("invalid request body: "+err.Error()))
 			return
 		}
 		m, err := mode.ParseCommand(req.Mode)
@@ -287,9 +294,10 @@ func (s *Server) apply(m mode.Mode) error {
 		return err
 	}
 	if m.Name == mode.OOM {
-		// Fail before persisting anything.
+		// Fail before persisting anything. The guard's remedies name
+		// BOP_OOM_UNSAFE, which serve reads once at boot.
 		if err := s.Machine.CheckOOM(); err != nil {
-			return &mode.UsageError{Msg: err.Error()}
+			return &mode.UsageError{Msg: err.Error() + " (BOP_OOM_UNSAFE is read when the container starts; docker exec -e BOP_OOM_UNSAFE=1 has no effect)"}
 		}
 	}
 	switch {
