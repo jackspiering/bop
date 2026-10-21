@@ -470,6 +470,15 @@ func TestOOMViaExec(t *testing.T) {
 	})
 }
 
+// At the maximum rate a tick is about 100 GiB; allocated in one piece the Go
+// runtime dies with "out of memory" (exit 2) instead of the cgroup killing it.
+func TestOOMMaxRate(t *testing.T) {
+	t.Parallel()
+	expectOOMKilled(t, func(t *testing.T) string {
+		return run(t, cat(oomFlags(), env("BOP_MODE", "oom rate=1048576"), []string{image})...)
+	})
+}
+
 func TestOOMRefusedWithoutLimit(t *testing.T) {
 	t.Parallel()
 	c := run(t, image)
@@ -519,6 +528,77 @@ func hasStickyFile(t *testing.T, c string) bool {
 	t.Helper()
 	_, err := docker(t, "cp", c+":/tmp/bop/mode", "-")
 	return err == nil
+}
+
+func TestOOMRefusedWithLimitAboveHostMemory(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat([]string{"--memory=1t"}, env("BOP_MODE", "oom rate=1"), []string{image})...)
+	waitExited(t, c, 30*time.Second)
+	if got := exitCode(t, c); got != 2 {
+		t.Fatalf("exit code = %d, want 2\n%s", got, logs(c))
+	}
+	if out := logs(c); !strings.Contains(out, "MemTotal") || !strings.Contains(out, "BOP_OOM_UNSAFE") {
+		t.Fatalf("expected a refusal naming MemTotal and BOP_OOM_UNSAFE:\n%s", out)
+	}
+
+	// BOP_OOM_UNSAFE=1 still bypasses every check. At 1 MiB/s for a few
+	// seconds this allocates almost nothing before the container is removed.
+	unsafe := run(t, cat([]string{"--memory=1t"}, env("BOP_MODE", "oom rate=1"), env("BOP_OOM_UNSAFE", "1"), []string{image})...)
+	waitFor(t, unsafe, 30*time.Second, "oom to start", func() bool { return strings.Contains(logs(unsafe), "allocating memory") })
+	time.Sleep(time.Second)
+	if inspect(t, unsafe, "{{.State.Running}}") != "true" {
+		t.Fatalf("BOP_OOM_UNSAFE=1 must bypass the guard\n%s", logs(unsafe))
+	}
+	mustDocker(t, "rm", "-f", unsafe)
+}
+
+func TestOOMRefusedWithUnlimitedSwap(t *testing.T) {
+	t.Parallel()
+	// Assumes the Docker daemon runs on this host.
+	if swapTotal(t) == 0 {
+		t.Skip("host has no swap")
+	}
+	c := run(t, cat([]string{"--memory=64m", "--memory-swap=-1"}, env("BOP_MODE", "oom rate=1"), []string{image})...)
+	waitExited(t, c, 30*time.Second)
+	if got := exitCode(t, c); got != 2 {
+		t.Fatalf("exit code = %d, want 2\n%s", got, logs(c))
+	}
+	if out := logs(c); !strings.Contains(out, "memory.swap.max") || !strings.Contains(out, "--memory-swap") {
+		t.Fatalf("expected a refusal about swap:\n%s", out)
+	}
+}
+
+func swapTotal(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		t.Skip(err)
+	}
+	for line := range strings.Lines(string(b)) {
+		if f := strings.Fields(line); len(f) >= 2 && f[0] == "SwapTotal:" {
+			n, _ := strconv.Atoi(f[1])
+			return n
+		}
+	}
+	return 0
+}
+
+// With a host cgroup namespace /sys/fs/cgroup is the host's root cgroup, so the
+// limit must be read from the process's own cgroup.
+func TestOOMHostCgroupns(t *testing.T) {
+	t.Parallel()
+	expectOOMKilled(t, func(t *testing.T) string {
+		return run(t, cat(oomFlags(), []string{"--cgroupns=host"}, env("BOP_MODE", "oom rate=32"), []string{image})...)
+	})
+
+	c := run(t, cat([]string{"--cgroupns=host"}, env("BOP_MODE", "oom"), []string{image})...)
+	waitExited(t, c, 30*time.Second)
+	if got := exitCode(t, c); got != 2 {
+		t.Fatalf("host cgroupns without limit: exit code = %d, want 2\n%s", got, logs(c))
+	}
+	if out := logs(c); !strings.Contains(out, "BOP_OOM_UNSAFE") {
+		t.Fatalf("refusal must mention BOP_OOM_UNSAFE:\n%s", out)
+	}
 }
 
 func TestHang(t *testing.T) {

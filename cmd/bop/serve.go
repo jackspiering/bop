@@ -19,8 +19,9 @@ import (
 	"github.com/jackspiering/bop/internal/server"
 )
 
-// memoryMaxPath is the cgroup file the oom guard reads; tests point it elsewhere.
-var memoryMaxPath = oom.MemoryMaxPath
+// checkOOMLimit is the oom guard without the BOP_OOM_UNSAFE bypass; tests
+// replace it.
+var checkOOMLimit = oom.CheckOwnCgroup
 
 // config is the boot-time configuration, parsed from BOP_* variables.
 type config struct {
@@ -128,7 +129,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		if cfg.oomUnsafe {
 			return nil
 		}
-		return oom.Check(memoryMaxPath)
+		return checkOOMLimit()
 	}
 
 	// bop cannot tell a tmpfs (emptied on every restart) from a volume or an

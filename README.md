@@ -53,7 +53,7 @@ the image has `bop` on `PATH`.
 | `unhealthy` | `after=<dur>` (0) | Healthy until `after`, then `/healthz` returns 503. The process keeps running. |
 | `crash` | `exit=<code>` (1), `after=<dur>` (0) | Exits with `code` after `after`. Via exec it responds first, then exits. |
 | `crash-loop` | `interval=<dur>` (5s), `exit=<code>` (1) | Each process start exits with `code` after `interval`. Only as boot mode or with `sticky=true`; a plain exec is rejected. |
-| `oom` | `rate=<MiB/s>` (64) | Allocates and writes every page until the cgroup kills the process (exit 137, `OOMKilled=true`). Refuses (exit 2) when `/sys/fs/cgroup/memory.max` is `max`, unless `BOP_OOM_UNSAFE=1`. Needs cgroup v2. |
+| `oom` | `rate=<MiB/s>` (64) | Allocates and writes every page until the cgroup kills the process (exit 137, `OOMKilled=true`). Reads `memory.max` from the process's own cgroup (from `/proc/self/cgroup`, so `--cgroupns=host` works) and refuses (exit 2) unless it is a number below the host's `MemTotal`, and, on a host with swap, `memory.swap.max` is not `max`. Set `--memory-swap` equal to `--memory` (`memswap_limit` = `mem_limit`) so swap cannot delay the kill. `BOP_OOM_UNSAFE=1` skips these checks. Needs cgroup v2. |
 | `hang` | | `/healthz` and `/info` accept the connection and never answer. A client that closes or half-closes its side gets the connection closed without a response. The process stays alive and the control listener keeps working, so `bop healthy` recovers it. |
 
 Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
@@ -82,7 +82,7 @@ a runtime switch.
 | `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows its port. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener, `[host]:port`. A bare port is refused here: `:<port>` would expose the mode-switching API to the network, so it has to be written out; use `127.0.0.1:<port>` to keep it local. `docker exec` inherits it from the container's environment. |
 | `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. A sticky mode lasts exactly as long as this directory; see [Sticky](#sticky-restart-vs-recreate). |
-| `BOP_OOM_UNSAFE` | | `1` allows `oom` without a memory limit. It can take the host down. |
+| `BOP_OOM_UNSAFE` | | `1` skips the `oom` guard (no limit, a limit at or above host memory, unlimited swap). It can take the host down. |
 
 ## Endpoints
 
