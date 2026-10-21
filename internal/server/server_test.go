@@ -254,6 +254,8 @@ func TestControlRejections(t *testing.T) {
 		{"crash exit=999", "0 to 255"},
 		{"crash-loop", "sticky=true"},
 		{"oom", "no memory limit"},
+		// BOP_OOM_UNSAFE is boot-only, so the remedy must say so.
+		{"oom", "docker exec -e BOP_OOM_UNSAFE=1 has no effect"},
 		// A persisted oom would exit 2 on every restart.
 		{"oom sticky=true", "no memory limit"},
 		{"", "empty mode"},
@@ -270,6 +272,15 @@ func TestControlRejections(t *testing.T) {
 	}
 	if got, _ := h.client.Status(context.Background()); got.Mode != "healthy" {
 		t.Fatalf("rejected commands changed the mode to %q", got.Mode)
+	}
+}
+
+func TestControlOversizedBodyIs413(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	_, err := h.client.Set(context.Background(), "unhealthy "+strings.Repeat("x", 5000))
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("Set with a 5000-byte body = %v, want 413", err)
 	}
 }
 
@@ -508,7 +519,13 @@ func TestConcurrentStickyCommandsAgree(t *testing.T) {
 				_, err := h.client.Set(ctx, "oom sticky=true")
 				aErr <- err
 			}()
-			<-paused
+			select {
+			case <-paused:
+			case err := <-aErr:
+				t.Fatalf("A finished without reaching Machine.Set's oom check: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("A never reached Machine.Set's oom check")
+			}
 
 			bErr := make(chan error, 1)
 			go func() {

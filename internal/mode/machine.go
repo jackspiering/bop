@@ -161,11 +161,13 @@ func (mc *Machine) snapshotLocked() Snapshot {
 	return s
 }
 
-// Changed returns a channel that is closed on the next mode change.
-func (mc *Machine) Changed() <-chan struct{} {
+// Watch returns the current mode's name and a channel that is closed on the
+// next mode change. Both are read under one lock, so no change between them
+// is missed.
+func (mc *Machine) Watch() (name string, changed <-chan struct{}) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
-	return mc.changed
+	return mc.cur.Name, mc.changed
 }
 
 // CheckOOM reports whether the oom mode may run, or nil if there is no check.

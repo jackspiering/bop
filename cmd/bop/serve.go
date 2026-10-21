@@ -37,7 +37,12 @@ type config struct {
 func loadConfig(getenv func(string) string) (config, error) {
 	var c config
 	var err error
-	if c.boot, err = mode.Parse(envOr(getenv, "BOP_MODE", mode.Healthy)); err != nil {
+	// A blank BOP_MODE means healthy, like an unset one.
+	bootSpec := strings.TrimSpace(getenv("BOP_MODE"))
+	if bootSpec == "" {
+		bootSpec = mode.Healthy
+	}
+	if c.boot, err = mode.Parse(bootSpec); err != nil {
 		return c, fmt.Errorf("BOP_MODE: %w", err)
 	}
 	if v := getenv("BOP_START_DELAY"); v != "" {
@@ -140,13 +145,8 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	}
 
 	boot, err := bootMode(cfg.store, cfg.boot, checkOOM, log)
-	// An oom refusal is a configuration mistake, reported like the one from
-	// machine.Set below; a bad or unwritable sticky file is not.
-	if ue, ok := err.(*mode.UsageError); ok {
-		return usageError(stderr, "%v", ue)
-	}
 	if err != nil {
-		return bootError(stderr, err)
+		return reportBootError(stderr, err)
 	}
 
 	machine := mode.NewMachine(mode.Hooks{
@@ -171,7 +171,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	go serveHTTP(log, "control", controlLn, srv.ControlHandler(cfg.controlAddr))
 
 	if err := machine.Set(boot, 0); err != nil {
-		return usageError(stderr, "%v", err)
+		return reportBootError(stderr, oomRefusal(err))
 	}
 
 	go func() {
@@ -187,16 +187,32 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	return handleSignals(log, cfg.sigterm, sigs)
 }
 
-// bootError reports a boot failure that is not a usage mistake, so the usage
-// text would only bury the remedy. It exits 2 like a configuration error.
-func bootError(stderr io.Writer, err error) int {
+// reportBootError reports a usage mistake with the usage text. Any other boot
+// failure (a bad or unwritable sticky file, an oom guard that cannot read the
+// cgroup) is reported without it, because the usage text would only bury the
+// remedy. Both exit 2 like a configuration error.
+func reportBootError(stderr io.Writer, err error) int {
+	if ue, ok := err.(*mode.UsageError); ok {
+		return usageError(stderr, "%v", ue)
+	}
 	fmt.Fprintf(stderr, "bop: %v\n", err)
 	return 2
 }
 
+// oomRefusal classifies an oom guard refusal at boot. A missing or too large
+// limit is a configuration mistake, so it becomes a *mode.UsageError; an
+// environment the guard cannot check (no cgroup v2, an unreadable memory.max)
+// is not.
+func oomRefusal(err error) error {
+	if errors.Is(err, oom.ErrNoLimit) {
+		return &mode.UsageError{Msg: err.Error()}
+	}
+	return err
+}
+
 // bootMode applies the boot precedence: a sticky file overrides BOP_MODE, and
 // a sticky BOP_MODE creates the file. `healthy sticky=true` persists nothing,
-// and a sticky oom is refused, as a *mode.UsageError, before it is persisted.
+// and a sticky oom is refused (see oomRefusal) before it is persisted.
 func bootMode(store mode.Store, env mode.Mode, checkOOM func() error, log *slog.Logger) (mode.Mode, error) {
 	stored, ok, err := store.Load()
 	switch {
@@ -211,7 +227,7 @@ func bootMode(store mode.Store, env mode.Mode, checkOOM func() error, log *slog.
 		// Refuse oom before persisting it, as Server.apply does at runtime.
 		if env.Name == mode.OOM {
 			if err := checkOOM(); err != nil {
-				return mode.Mode{}, &mode.UsageError{Msg: err.Error()}
+				return mode.Mode{}, oomRefusal(err)
 			}
 		}
 		if err := store.Save(env); err != nil {

@@ -87,13 +87,13 @@ A proxy's own error or a redirect is never mistaken for the target's state.
 
 | Variable | Default | |
 |---|---|---|
-| `BOP_MODE` | `healthy` | Initial mode, same grammar as above. |
+| `BOP_MODE` | `healthy` | Initial mode, same grammar as above. An empty or blank value means `healthy`. |
 | `BOP_START_DELAY` | `0` | Don't bind the data listener until this has passed. The control listener binds immediately. The boot mode starts at process start, not when the delay ends: `after` and `interval` include the delay, a `crash`/`crash-loop` that fires within the delay exits before the data listener binds, and `oom` allocates during the delay. |
 | `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly. Until that handler is installed the Go runtime exits 143 (SIGTERM) or 130 (SIGINT), including as PID 1; a short window remains during process startup. |
 | `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows it: same host and port, with `127.0.0.1` for an empty or unspecified host. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener, `[host]:port`. A bare port is refused here: `:<port>` would expose the mode-switching API to the network, so it has to be written out; use `127.0.0.1:<port>` to keep it local. `docker exec` inherits it from the container's environment. |
 | `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. A sticky mode lasts exactly as long as this directory; see [Sticky](#sticky-restart-vs-recreate). |
-| `BOP_OOM_UNSAFE` | | `1` skips the `oom` guard (no limit, a limit at or above host memory, unlimited swap). It can take the host down. |
+| `BOP_OOM_UNSAFE` | | `1` skips the `oom` guard (no limit, a limit at or above host memory, unlimited swap). It can take the host down. Like every knob it is read at boot: `docker exec -e BOP_OOM_UNSAFE=1 <c> bop oom` is still refused. |
 
 ## Endpoints
 

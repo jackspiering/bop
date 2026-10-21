@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,7 +50,44 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "docker build (sidecar) failed: %v\n%s\n", err, out)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	// t.Cleanup does not run when -timeout fires or the run is interrupted,
+	// so leftovers from an earlier run are removed first.
+	sweep(namePrefix)
+	code := m.Run()
+	sweep(namePrefix)
+	os.Exit(code)
+}
+
+// namePrefix starts the name of every container, network, volume and Compose
+// project the tests create.
+const namePrefix = "bop-it-"
+
+// sweep removes, best effort, the containers, networks and volumes whose names
+// start with prefix. Docker's name filter matches substrings, so the names
+// are checked again here.
+func sweep(prefix string) {
+	for _, kind := range []struct {
+		list   []string
+		remove []string
+	}{
+		{[]string{"ps", "-a", "--format", "{{.Names}}"}, []string{"rm", "-f", "-v"}},
+		{[]string{"network", "ls", "--format", "{{.Name}}"}, []string{"network", "rm"}},
+		{[]string{"volume", "ls", "--format", "{{.Name}}"}, []string{"volume", "rm", "-f"}},
+	} {
+		out, err := dockerCtx(time.Minute, append(kind.list, "--filter", "name="+prefix)...)
+		if err != nil {
+			continue
+		}
+		var names []string
+		for _, n := range strings.Fields(out) {
+			if strings.HasPrefix(n, prefix) {
+				names = append(names, n)
+			}
+		}
+		if len(names) > 0 {
+			_, _ = dockerCtx(2*time.Minute, append(kind.remove, names...)...)
+		}
+	}
 }
 
 func repoRoot() (string, error) {
@@ -94,7 +132,42 @@ func uniqueName(t *testing.T) string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
 	base := strings.ToLower(nameUnsafe.ReplaceAllString(t.Name(), "-"))
-	return "bop-it-" + base + "-" + hex.EncodeToString(b[:])
+	return namePrefix + base + "-" + hex.EncodeToString(b[:])
+}
+
+func TestSweepRemovesOnlyPrefixed(t *testing.T) {
+	t.Parallel()
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	// Under namePrefix, so the suite's own sweep removes anything an
+	// interrupted run of this test leaves behind.
+	prefix := namePrefix + "sweep-" + hex.EncodeToString(b[:]) + "-"
+	victim, network, volume := prefix+"victim", prefix+"net", prefix+"vol"
+	// Docker's name filter matches this too, but it does not start with prefix.
+	survivor := namePrefix + "keep-" + prefix + "survivor"
+	t.Cleanup(func() {
+		_, _ = dockerCtx(time.Minute, "rm", "-f", victim, survivor)
+		_, _ = dockerCtx(time.Minute, "network", "rm", network)
+		_, _ = dockerCtx(time.Minute, "volume", "rm", "-f", volume, survivor)
+	})
+	mustDocker(t, "run", "-d", "--restart=always", "--name", victim, image)
+	mustDocker(t, "run", "-d", "--name", survivor, image)
+	mustDocker(t, "network", "create", network)
+	mustDocker(t, "volume", "create", volume)
+	mustDocker(t, "volume", "create", survivor)
+
+	sweep(prefix)
+
+	for _, gone := range [][]string{{"container", victim}, {"network", network}, {"volume", volume}} {
+		if _, err := docker(t, gone[0], "inspect", gone[1]); err == nil {
+			t.Errorf("sweep left %s %s", gone[0], gone[1])
+		}
+	}
+	for _, kept := range []string{"container", "volume"} {
+		if _, err := docker(t, kept, "inspect", survivor); err != nil {
+			t.Errorf("sweep removed %s %s, which only contains the prefix", kept, survivor)
+		}
+	}
 }
 
 // run starts a detached container and removes it when the test ends.
@@ -252,9 +325,19 @@ func TestImageMetadata(t *testing.T) {
 			t.Errorf("%s = %q, want %q", format, got, want)
 		}
 	}
-	for _, key := range []string{"revision", "created", "version"} {
-		if got := mustDocker(t, "image", "inspect", "-f", `{{index .Config.Labels "org.opencontainers.image.`+key+`"}}`, image); got == "" {
-			t.Errorf("label %s is empty", key)
+	// A local build has no VERSION build arg. publish.yml sets revision and
+	// created through metadata-action, so a local build has neither label
+	// (rather than a placeholder that looks like real provenance).
+	var labels map[string]string
+	if err := json.Unmarshal([]byte(mustDocker(t, "image", "inspect", "-f", "{{json .Config.Labels}}", image)), &labels); err != nil {
+		t.Fatal(err)
+	}
+	if got := labels["org.opencontainers.image.version"]; got != "dev" {
+		t.Errorf("label version = %q, want %q", got, "dev")
+	}
+	for _, key := range []string{"revision", "created"} {
+		if got, ok := labels["org.opencontainers.image."+key]; ok {
+			t.Errorf("label %s = %q, want it unset in a local build", key, got)
 		}
 	}
 }
@@ -387,6 +470,7 @@ func TestCrashLoopRejectedWhenNotSticky(t *testing.T) {
 	if code != 2 || !strings.Contains(out, "sticky=true") {
 		t.Fatalf("exec crash-loop = %d\n%s", code, out)
 	}
+	assertMode(t, c, "healthy")
 	if health(t, c) != "healthy" || inspect(t, c, "{{.State.Running}}") != "true" {
 		t.Fatal("rejected command must not affect the container")
 	}
@@ -498,6 +582,7 @@ func TestOOMRefusedWithoutLimit(t *testing.T) {
 	if code != 2 || !strings.Contains(out, "memory limit") {
 		t.Fatalf("exec oom = %d\n%s", code, out)
 	}
+	assertMode(t, c, "healthy")
 	if health(t, c) != "healthy" {
 		t.Fatal("refused oom must leave the container healthy")
 	}
@@ -871,7 +956,8 @@ func TestStickyHealthyDoesNotChangeBootMode(t *testing.T) {
 	c := run(t, cat(fastHealth, env("BOP_MODE", "unhealthy"), []string{image})...)
 	waitHealth(t, c, "unhealthy", 30*time.Second)
 	// healthy+sticky removes nothing here, but a sticky healthy request still
-	// switches the live mode; BOP_MODE only applies again after a recreate.
+	// switches the live mode. It persists nothing, so BOP_MODE applies again
+	// on the next start, here a restart.
 	mustExec(t, c, "bop", "healthy", "sticky=true")
 	waitHealth(t, c, "healthy", 30*time.Second)
 	mustDocker(t, "restart", "-t", "5", c)
@@ -886,6 +972,7 @@ func TestStickyOnReadOnlyRootFails(t *testing.T) {
 	if code == 0 || !strings.Contains(out, "read-only") {
 		t.Fatalf("exec = %d\n%s", code, out)
 	}
+	assertMode(t, c, "healthy")
 	if health(t, c) != "healthy" {
 		t.Fatal("a failed sticky write must not change the mode")
 	}
@@ -1039,16 +1126,33 @@ func TestExecBopInRunningContainer(t *testing.T) {
 	}
 }
 
-func instanceID(t *testing.T, c string) string {
+// statusField returns the value of key in `bop status`, which reads the live
+// mode from the process instead of waiting for Docker's lagging health status.
+func statusField(t *testing.T, c, key string) string {
 	t.Helper()
-	for _, line := range strings.Split(mustExec(t, c, "bop", "status"), "\n") {
-		if v, ok := strings.CutPrefix(line, "instance_id: "); ok {
+	out := mustExec(t, c, "bop", "status")
+	for line := range strings.Lines(out) {
+		if v, ok := strings.CutPrefix(line, key+":"); ok {
 			return strings.TrimSpace(v)
 		}
 	}
-	t.Fatal("no instance_id in status")
+	t.Fatalf("no %s in status:\n%s", key, out)
 	return ""
 }
+
+func instanceID(t *testing.T, c string) string { return statusField(t, c, "instance_id") }
+
+// assertMode fails unless the live mode is want, right after a rejected command.
+func assertMode(t *testing.T, c, want string) {
+	t.Helper()
+	if got := statusField(t, c, "mode"); got != want {
+		t.Fatalf("live mode = %q, want %q: a rejected command must not change it", got, want)
+	}
+}
+
+// dataOnAllInterfaces9000 matches the data listener's log line for ":9000":
+// "[::]" on a dual-stack host, "0.0.0.0" where the kernel has IPv6 disabled.
+var dataOnAllInterfaces9000 = regexp.MustCompile(`listener=data addr=(\[::\]|0\.0\.0\.0):9000\b`)
 
 func TestCustomAddresses(t *testing.T) {
 	t.Parallel()
@@ -1060,7 +1164,7 @@ func TestCustomAddresses(t *testing.T) {
 	if code, _ := execCode(t, c, "bop", "healthcheck", "--url=http://127.0.0.1:8080/healthz"); code != 1 {
 		t.Fatalf("nothing should listen on the default port, healthcheck = %d", code)
 	}
-	if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9902") {
+	if out := logs(c); !dataOnAllInterfaces9000.MatchString(out) || !strings.Contains(out, "addr=127.0.0.1:9902") {
 		t.Fatalf("listeners not on the configured addresses:\n%s", out)
 	}
 }
@@ -1076,7 +1180,7 @@ func TestBarePortAddresses(t *testing.T) {
 		waitHealth(t, c, "healthy", 30*time.Second)
 		mustExec(t, c, "bop", "unhealthy")
 		waitHealth(t, c, "unhealthy", 30*time.Second)
-		if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9901") {
+		if out := logs(c); !dataOnAllInterfaces9000.MatchString(out) || !strings.Contains(out, "addr=127.0.0.1:9901") {
 			t.Fatalf("listeners not on the expected addresses:\n%s", out)
 		}
 	})
@@ -1147,16 +1251,27 @@ func TestSidecarLogsInstanceIDChange(t *testing.T) {
 
 	parent := run(t, "--network", netName, "--network-alias", "parent", image)
 	waitHealth(t, parent, "healthy", 30*time.Second)
-	sidecar := run(t, "--network", netName, image, "sidecar", "--target=http://parent:8080", "--interval=300ms")
+	// The image's healthcheck probes 127.0.0.1:8080, which is nothing in the
+	// sidecar's own namespace (sidecarImage's /info probe too), so drop it.
+	sidecar := run(t, "--network", netName, "--no-healthcheck", image, "sidecar", "--target=http://parent:8080", "--interval=300ms")
 	waitFor(t, sidecar, 20*time.Second, "target reachable", func() bool {
 		return strings.Contains(logs(sidecar), "target reachable")
 	})
+	id1 := instanceID(t, parent)
 
-	// Same name, same address, new process: a new instance_id.
+	// Same name, same address, new process: a new instance_id. The restart
+	// usually leaves an outage between the two ids; the change is logged anyway.
 	mustDocker(t, "restart", "-t", "5", parent)
+	waitHealth(t, parent, "healthy", 30*time.Second)
+	id2 := instanceID(t, parent)
+	want := "old=" + id1 + " new=" + id2
 	waitFor(t, sidecar, 30*time.Second, "instance_id change", func() bool {
-		l := logs(sidecar)
-		return strings.Contains(l, "instance_id changed") || strings.Contains(l, "target reachable again")
+		for line := range strings.Lines(logs(sidecar)) {
+			if strings.Contains(line, "instance_id changed") && strings.Contains(line, want) {
+				return true
+			}
+		}
+		return false
 	})
 }
 

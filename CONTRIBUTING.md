@@ -16,7 +16,10 @@ The integration tests build `bop:test` from the working tree, drive real Docker
 through the `docker` CLI and assert on `docker inspect`. They need Docker
 Engine 25.0+ (to build the image), Docker Compose 2.18+ (the example tests drop
 published ports with `!reset`) and cgroup v2 (for `oom`). They take about a
-minute.
+minute. A timed-out or interrupted run cannot clean up after itself, so the
+suite removes leftover `bop-it-*` containers, networks and volumes when it
+starts and again when it ends. Do not run two integration suites against the
+same Docker daemon at once.
 
 ## Changes
 

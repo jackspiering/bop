@@ -110,7 +110,7 @@ func ParseCommand(s string) (Mode, error) {
 		if k == "sticky" {
 			b, err := strconv.ParseBool(v)
 			if err != nil {
-				return Mode{}, usagef("invalid sticky=%q; expected true or false", v)
+				return Mode{}, usagef("invalid sticky=%q; expected true or false (1, 0, t, f and other strconv.ParseBool spellings are accepted too)", v)
 			}
 			m.Sticky = b
 			continue
@@ -132,7 +132,10 @@ func (m *Mode) set(k, v string) error {
 		if err != nil {
 			return usagef("invalid %s=%q: %v", k, v, err)
 		}
-		if d < 0 || (k == "interval" && d == 0) {
+		if d < 0 {
+			return usagef("invalid %s=%q: must not be negative", k, v)
+		}
+		if k == "interval" && d == 0 {
 			return usagef("invalid %s=%q: must be positive", k, v)
 		}
 		if k == "after" {

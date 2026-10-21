@@ -16,14 +16,12 @@ RUN mkdir -p /out/tmp/bop /out/usr/local/bin && chmod 1777 /out/tmp/bop && ln -s
 
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 ARG VERSION=dev
-ARG REVISION=unknown
-ARG CREATED=unknown
+# revision and created are set by publish.yml through metadata-action, which
+# also overrides these labels; a local build has neither.
 LABEL org.opencontainers.image.title="bop" \
       org.opencontainers.image.description="Deliberately failing test image. Not for production." \
       org.opencontainers.image.source="https://github.com/jackspiering/bop" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.created="${CREATED}" \
       org.opencontainers.image.version="${VERSION}"
 COPY --from=build /out/bop /bop
 COPY --from=build /out/usr/ /usr/
