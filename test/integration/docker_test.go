@@ -25,8 +25,9 @@ const (
 )
 
 // fastHealth shortens the probe timings while keeping the image's own test
-// command (docker merges these flags with the image HEALTHCHECK).
-var fastHealth = []string{"--health-interval=1s", "--health-timeout=2s", "--health-retries=2", "--health-start-period=0s"}
+// command (docker merges these flags with the image HEALTHCHECK). The start
+// period is 1ms, not 0s: Docker reads 0 as unset and inherits the image's 10s.
+var fastHealth = []string{"--health-interval=1s", "--health-timeout=2s", "--health-retries=2", "--health-start-period=1ms"}
 
 func TestMain(m *testing.M) {
 	root, err := repoRoot()
@@ -255,6 +256,16 @@ func TestImageMetadata(t *testing.T) {
 		if got := mustDocker(t, "image", "inspect", "-f", `{{index .Config.Labels "org.opencontainers.image.`+key+`"}}`, image); got == "" {
 			t.Errorf("label %s is empty", key)
 		}
+	}
+}
+
+// fastHealth must really replace the image's 10s start period: Docker treats
+// a zero start period as unset and inherits the image's value.
+func TestFastHealthOverridesStartPeriod(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	if got := inspect(t, c, "{{.Config.Healthcheck.StartPeriod}}"); got != "1ms" {
+		t.Fatalf("StartPeriod = %s, want 1ms", got)
 	}
 }
 

@@ -192,6 +192,10 @@ func TestExamplesRun(t *testing.T) {
 		t.Parallel()
 		p := upExample(t, "restart-vs-recreate", "bop")
 		c := p.container("bop")
+		// The example's start_period replaces the image's 10s (0s would not).
+		if got := inspect(t, c, "{{.Config.Healthcheck.StartPeriod}}"); got != "1ms" {
+			t.Fatalf("StartPeriod = %s, want 1ms", got)
+		}
 		waitHealth(t, c, "healthy", 40*time.Second)
 		mustExec(t, c, "bop", "unhealthy", "sticky=true")
 		waitHealth(t, c, "unhealthy", 30*time.Second)
@@ -209,6 +213,9 @@ func TestExamplesRun(t *testing.T) {
 		t.Parallel()
 		p := upExample(t, "state-dir", "bop")
 		c := p.container("bop")
+		if got := inspect(t, c, "{{.Config.Healthcheck.StartPeriod}}"); got != "1ms" {
+			t.Fatalf("StartPeriod = %s, want 1ms", got)
+		}
 		waitHealth(t, c, "healthy", 40*time.Second)
 		mustExec(t, c, "bop", "unhealthy", "sticky=true")
 		waitHealth(t, c, "unhealthy", 30*time.Second)
