@@ -179,7 +179,7 @@ form (CI runs it against every image it publishes):
 
 ```sh
 cosign verify ghcr.io/jackspiering/bop:0.1.0 \
-  --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+  --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -196,7 +196,10 @@ cosign verify ghcr.io/jackspiering/bop:0.1.0 \
 Pushing a `vX.Y.Z` tag on a commit that is on `main` runs the same CI, then
 publishes the versioned tags, signs the digest and creates the GitHub Release
 with generated notes. Tags like `v1.0.0-rc.1` publish only their exact version
-and mark the release as a pre-release. All tags are signed the same way, so the
+and mark the release as a pre-release. A release tag must be strict
+[SemVer](https://semver.org/), `vMAJOR.MINOR.PATCH` or
+`vMAJOR.MINOR.PATCH-PRERELEASE`, with no leading zeros and no `+build`
+metadata. The workflow refuses any other tag before it pushes anything. All tags are signed the same way, so the
 `cosign verify` command above works for any of them.
 
 ## Development

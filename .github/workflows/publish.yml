@@ -1,7 +1,8 @@
 name: Publish
 
-# main publishes :edge and :sha-<short>. A v*.*.* tag publishes :<version>,
-# :<major>.<minor> and :latest, then creates the GitHub Release.
+# main publishes :edge and :sha-<short>. A vX.Y.Z tag publishes :X.Y.Z, :X.Y
+# and :latest; a vX.Y.Z-PRERELEASE tag publishes only :X.Y.Z-PRERELEASE. Both
+# then create the GitHub Release. Any other tag fails before anything is pushed.
 on:
   push:
     branches: [main]
@@ -16,6 +17,10 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/jackspiering/bop
+  # Strict SemVer with an optional pre-release and no +build metadata. The
+  # trigger above is broader on purpose, so a mistyped tag shows up as a red
+  # run instead of no run. test/release checks this regex.
+  TAG_RE: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
 
 jobs:
   ci:
@@ -34,6 +39,13 @@ jobs:
       packages: write # push to ghcr.io
       id-token: write # keyless cosign signing
     steps:
+      - name: Require a vMAJOR.MINOR.PATCH[-PRERELEASE] tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if ! [[ $GITHUB_REF_NAME =~ $TAG_RE ]]; then
+            echo "::error::$GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH[-PRERELEASE]; refusing to publish"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -102,7 +114,7 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           cosign verify "${IMAGE}@${DIGEST}" \
-            --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+.*)$' \
+            --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
   release:

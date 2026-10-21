@@ -28,6 +28,7 @@ Engine 25.0 or later (for `--start-interval`), Docker Compose v2 and cgroup v2
 
 ## Releases
 
-A maintainer pushes a `vX.Y.Z` tag on a commit that is on `main`; the publish
-workflow does the rest. Release notes are generated from merged pull requests,
+A maintainer pushes a `vX.Y.Z` (or `vX.Y.Z-rc.N`) tag on a commit that is on
+`main`; the publish workflow does the rest. Tags must be strict SemVer with no
+`+build` metadata, or the workflow refuses them. Release notes are generated from merged pull requests,
 so there is no separate changelog.
