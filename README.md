@@ -88,7 +88,7 @@ Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
 - `GET /info`: JSON with `instance_id` (random per process start), `pid`,
   `hostname`, `started_at`, `mode`, `sticky`, `version`.
 - Control listener (`BOP_CONTROL_ADDR`): a small JSON API (`GET /status`,
-  `POST /mode`, `POST /clear`) used by the CLI only.
+  `POST /mode` with `{"mode":"<command>"}`, including `clear`) used by the CLI only.
   **Caveat:** anything that shares the container's network namespace can reach
   it and switch the mode: sidecars using `network_mode: service:` or
   `container:`, and `--network host`. It binds to loopback by default.

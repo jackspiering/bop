@@ -388,6 +388,38 @@ func TestControlAcceptsCLIHosts(t *testing.T) {
 	}
 }
 
+func TestControlClearIsOnlyAMode(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	ctx := context.Background()
+	if _, err := h.client.Set(ctx, "unhealthy sticky=true"); err != nil {
+		t.Fatal(err)
+	}
+	// Shaped like a CLI request, so only the route decides the answer.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.control.URL+"/clear", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /clear = %d, want 404", resp.StatusCode)
+	}
+	if _, ok, _ := h.store.Load(); !ok {
+		t.Fatal("POST /clear removed the sticky file")
+	}
+	st, err := h.client.Set(ctx, "clear")
+	if err != nil || st.Mode != "healthy" {
+		t.Fatalf("clear: %+v %v", st, err)
+	}
+	if _, ok, _ := h.store.Load(); ok {
+		t.Fatal("sticky file still present after clear")
+	}
+}
+
 func TestSticky(t *testing.T) {
 	h := newHarness(t, mode.Hooks{})
 	ctx := context.Background()

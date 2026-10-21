@@ -142,7 +142,8 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// ControlHandler serves the CLI API: GET /status, POST /mode, POST /clear.
+// ControlHandler serves the CLI API: GET /status and POST /mode
+// ({"mode":"<command>"}, including "clear").
 // addr is BOP_CONTROL_ADDR. Anything that shares the network namespace can
 // call it, but requests from browsers are rejected (see cliOnly).
 func (s *Server) ControlHandler(addr string) http.Handler {
@@ -168,13 +169,6 @@ func (s *Server) ControlHandler(addr string) http.Handler {
 				status = http.StatusBadRequest
 			}
 			writeError(w, status, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, s.state())
-	})
-	mux.HandleFunc("POST /clear", func(w http.ResponseWriter, _ *http.Request) {
-		if err := s.apply(mode.Mode{Name: mode.Clear}); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, s.state())
