@@ -101,28 +101,14 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 			"(a tmpfs is emptied on every restart, a volume survives a recreate)", "dir", cfg.store.Dir)
 	}
 
-	// A sticky file overrides BOP_MODE; BOP_MODE with sticky=true creates it.
-	boot := cfg.boot
-	switch stored, ok, err := cfg.store.Load(); {
-	case err != nil:
+	boot, err := bootMode(cfg.store, cfg.boot, checkOOM, log)
+	// An oom refusal is a configuration mistake, reported like the one from
+	// machine.Set below; a bad or unwritable sticky file is not.
+	if ue, ok := err.(*mode.UsageError); ok {
+		return usageError(stderr, "%v", ue)
+	}
+	if err != nil {
 		return bootError(stderr, err)
-	case ok:
-		log.Info("sticky mode overrides BOP_MODE", "sticky", stored.String(), "BOP_MODE", cfg.boot.String())
-		boot = stored
-	case boot.Sticky:
-		if boot.Name == mode.Healthy {
-			boot.Sticky = false
-			break
-		}
-		// Refuse oom before persisting it, as Server.apply does at runtime.
-		if boot.Name == mode.OOM {
-			if err := checkOOM(); err != nil {
-				return usageError(stderr, "%v", err)
-			}
-		}
-		if err := cfg.store.Save(boot); err != nil {
-			return bootError(stderr, err)
-		}
 	}
 
 	machine := mode.NewMachine(mode.Hooks{
@@ -168,6 +154,33 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 func bootError(stderr io.Writer, err error) int {
 	fmt.Fprintf(stderr, "bop: %v\n", err)
 	return 2
+}
+
+// bootMode applies the boot precedence: a sticky file overrides BOP_MODE, and
+// a sticky BOP_MODE creates the file. `healthy sticky=true` persists nothing,
+// and a sticky oom is refused, as a *mode.UsageError, before it is persisted.
+func bootMode(store mode.Store, env mode.Mode, checkOOM func() error, log *slog.Logger) (mode.Mode, error) {
+	stored, ok, err := store.Load()
+	switch {
+	case err != nil:
+		return mode.Mode{}, err
+	case ok:
+		log.Info("sticky mode overrides BOP_MODE", "sticky", stored.String(), "BOP_MODE", env.String())
+		return stored, nil
+	case env.Sticky && env.Name == mode.Healthy:
+		env.Sticky = false
+	case env.Sticky:
+		// Refuse oom before persisting it, as Server.apply does at runtime.
+		if env.Name == mode.OOM {
+			if err := checkOOM(); err != nil {
+				return mode.Mode{}, &mode.UsageError{Msg: err.Error()}
+			}
+		}
+		if err := store.Save(env); err != nil {
+			return mode.Mode{}, err
+		}
+	}
+	return env, nil
 }
 
 func serveHTTP(log *slog.Logger, name string, ln net.Listener, h http.Handler) {

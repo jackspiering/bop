@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -415,5 +416,76 @@ func TestServeStickyOOMRefusedBeforePersist(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "mode")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a refused oom sticky=true persisted a sticky file: %v", err)
+	}
+}
+
+func TestBootMode(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	noLimit := func() error { return errors.New("no memory limit") }
+	for _, tc := range []struct {
+		name     string
+		stored   string // file content; "" means no file
+		env      string // BOP_MODE
+		checkOOM func() error
+		want     string // resulting mode, "" when an error is expected
+		wantFile string // file content afterwards; "" means no file
+	}{
+		{name: "no file, healthy", env: "healthy", want: "healthy"},
+		{name: "no file, sticky BOP_MODE writes it", env: "hang sticky=true",
+			want: "hang sticky=true", wantFile: "hang sticky=true\n"},
+		{name: "no file, healthy sticky persists nothing", env: "healthy sticky=true", want: "healthy"},
+		{name: "stored file overrides a sticky BOP_MODE", stored: "crash exit=3 after=1h0m0s sticky=true\n",
+			env: "unhealthy sticky=true", want: "crash exit=3 after=1h0m0s sticky=true",
+			wantFile: "crash exit=3 after=1h0m0s sticky=true\n"},
+		{name: "stored file is sticky even if written without it", stored: "hang\n", env: "healthy",
+			want: "hang sticky=true", wantFile: "hang\n"},
+		{name: "invalid stored file", stored: "bogus\n", env: "healthy", wantFile: "bogus\n"},
+		{name: "sticky oom without a limit persists nothing", env: "oom sticky=true", checkOOM: noLimit},
+		{name: "sticky oom with a limit persists", env: "oom sticky=true", checkOOM: func() error { return nil },
+			want: "oom rate=64 sticky=true", wantFile: "oom rate=64 sticky=true\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "mode")
+			if tc.stored != "" {
+				if err := os.WriteFile(path, []byte(tc.stored), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env, err := mode.Parse(tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := tc.checkOOM
+			if check == nil {
+				check = func() error { t.Error("unexpected oom check"); return nil }
+			}
+
+			got, err := bootMode(mode.Store{Dir: dir}, env, check, log)
+			switch {
+			case tc.want == "" && err == nil:
+				t.Errorf("bootMode = %q, want an error", got.String())
+			case tc.want != "" && err != nil:
+				t.Errorf("bootMode: %v", err)
+			case tc.want != "" && got.String() != tc.want:
+				t.Errorf("bootMode = %q, want %q", got.String(), tc.want)
+			}
+			b, err := os.ReadFile(path)
+			if tc.wantFile == "" && !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("sticky file = %q, %v; want none", b, err)
+			}
+			if tc.wantFile != "" && string(b) != tc.wantFile {
+				t.Errorf("sticky file = %q, %v; want %q", b, err, tc.wantFile)
+			}
+		})
+	}
+
+	// A sticky BOP_MODE that cannot be saved is an error (here Dir is a file).
+	notDir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notDir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bootMode(mode.Store{Dir: notDir}, mode.Mode{Name: mode.Hang, Sticky: true}, nil, log); err == nil {
+		t.Error("bootMode with an unwritable state dir succeeded")
 	}
 }
