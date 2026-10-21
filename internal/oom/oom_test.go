@@ -80,6 +80,9 @@ func TestCheckReadsSiblingSwapMax(t *testing.T) {
 	}
 }
 
+// TestTouchFillsEveryPage only shows that touch writes every page; it cannot
+// show that the pages are resident. The integration tests do that: a 64m
+// container is OOM-killed.
 func TestTouchFillsEveryPage(t *testing.T) {
 	b := touch(3*pageSize + 10)
 	for i := 0; i < len(b); i += pageSize {

@@ -519,7 +519,13 @@ func TestConcurrentStickyCommandsAgree(t *testing.T) {
 				_, err := h.client.Set(ctx, "oom sticky=true")
 				aErr <- err
 			}()
-			<-paused
+			select {
+			case <-paused:
+			case err := <-aErr:
+				t.Fatalf("A finished without reaching Machine.Set's oom check: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("A never reached Machine.Set's oom check")
+			}
 
 			bErr := make(chan error, 1)
 			go func() {

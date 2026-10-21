@@ -114,7 +114,11 @@ func TestMachineMinDelayDefersImmediateCrash(t *testing.T) {
 	if err := mc.Set(Mode{Name: Crash, Exit: 1}, 100*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	<-codes
+	select {
+	case <-codes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("crash did not fire")
+	}
 	if time.Since(start) < 100*time.Millisecond {
 		t.Fatal("exit was not deferred by minDelay")
 	}

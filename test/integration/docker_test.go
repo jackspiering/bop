@@ -956,7 +956,8 @@ func TestStickyHealthyDoesNotChangeBootMode(t *testing.T) {
 	c := run(t, cat(fastHealth, env("BOP_MODE", "unhealthy"), []string{image})...)
 	waitHealth(t, c, "unhealthy", 30*time.Second)
 	// healthy+sticky removes nothing here, but a sticky healthy request still
-	// switches the live mode; BOP_MODE only applies again after a recreate.
+	// switches the live mode. It persists nothing, so BOP_MODE applies again
+	// on the next start, here a restart.
 	mustExec(t, c, "bop", "healthy", "sticky=true")
 	waitHealth(t, c, "healthy", 30*time.Second)
 	mustDocker(t, "restart", "-t", "5", c)
@@ -1149,6 +1150,10 @@ func assertMode(t *testing.T, c, want string) {
 	}
 }
 
+// dataOnAllInterfaces9000 matches the data listener's log line for ":9000":
+// "[::]" on a dual-stack host, "0.0.0.0" where the kernel has IPv6 disabled.
+var dataOnAllInterfaces9000 = regexp.MustCompile(`listener=data addr=(\[::\]|0\.0\.0\.0):9000\b`)
+
 func TestCustomAddresses(t *testing.T) {
 	t.Parallel()
 	c := run(t, cat(fastHealth, env("BOP_ADDR", ":9000"), env("BOP_CONTROL_ADDR", "127.0.0.1:9902"), []string{image})...)
@@ -1159,7 +1164,7 @@ func TestCustomAddresses(t *testing.T) {
 	if code, _ := execCode(t, c, "bop", "healthcheck", "--url=http://127.0.0.1:8080/healthz"); code != 1 {
 		t.Fatalf("nothing should listen on the default port, healthcheck = %d", code)
 	}
-	if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9902") {
+	if out := logs(c); !dataOnAllInterfaces9000.MatchString(out) || !strings.Contains(out, "addr=127.0.0.1:9902") {
 		t.Fatalf("listeners not on the configured addresses:\n%s", out)
 	}
 }
@@ -1175,7 +1180,7 @@ func TestBarePortAddresses(t *testing.T) {
 		waitHealth(t, c, "healthy", 30*time.Second)
 		mustExec(t, c, "bop", "unhealthy")
 		waitHealth(t, c, "unhealthy", 30*time.Second)
-		if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9901") {
+		if out := logs(c); !dataOnAllInterfaces9000.MatchString(out) || !strings.Contains(out, "addr=127.0.0.1:9901") {
 			t.Fatalf("listeners not on the expected addresses:\n%s", out)
 		}
 	})
@@ -1246,7 +1251,9 @@ func TestSidecarLogsInstanceIDChange(t *testing.T) {
 
 	parent := run(t, "--network", netName, "--network-alias", "parent", image)
 	waitHealth(t, parent, "healthy", 30*time.Second)
-	sidecar := run(t, "--network", netName, image, "sidecar", "--target=http://parent:8080", "--interval=300ms")
+	// The image's healthcheck probes 127.0.0.1:8080, which is nothing in the
+	// sidecar's own namespace (sidecarImage's /info probe too), so drop it.
+	sidecar := run(t, "--network", netName, "--no-healthcheck", image, "sidecar", "--target=http://parent:8080", "--interval=300ms")
 	waitFor(t, sidecar, 20*time.Second, "target reachable", func() bool {
 		return strings.Contains(logs(sidecar), "target reachable")
 	})
