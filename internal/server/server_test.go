@@ -243,6 +243,27 @@ func TestSticky(t *testing.T) {
 	}
 }
 
+func TestNonStickySwitchKeepsStickyFile(t *testing.T) {
+	for _, spec := range []string{"healthy", "unhealthy", "hang", "unhealthy after=1h"} {
+		t.Run(spec, func(t *testing.T) {
+			h := newHarness(t, mode.Hooks{})
+			ctx := context.Background()
+			if _, err := h.client.Set(ctx, "unhealthy sticky=true"); err != nil {
+				t.Fatal(err)
+			}
+			st, err := h.client.Set(ctx, spec)
+			if err != nil || st.Sticky {
+				t.Fatalf("Set(%q) = %+v %v, want a non-sticky switch", spec, st, err)
+			}
+			// The sticky mode must come back on the next restart.
+			m, ok, err := h.store.Load()
+			if err != nil || !ok || m.Name != mode.Unhealthy || !m.Sticky {
+				t.Fatalf("after Set(%q) stored = %+v %v %v, want sticky unhealthy", spec, m, ok, err)
+			}
+		})
+	}
+}
+
 func TestStickyWriteFailureIsReported(t *testing.T) {
 	h := newHarness(t, mode.Hooks{})
 	blocker := filepath.Join(t.TempDir(), "file")

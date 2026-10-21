@@ -550,6 +550,27 @@ func TestStickyCleared(t *testing.T) {
 	}
 }
 
+func TestNonStickySwitchKeepsSticky(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+
+	// A non-sticky heal does not touch the file...
+	if out := mustExec(t, c, "bop", "healthy"); !strings.Contains(out, "sticky:      false") {
+		t.Fatalf("status:\n%s", out)
+	}
+	waitHealth(t, c, "healthy", 30*time.Second)
+
+	// ...so the sticky fault returns on restart.
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+}
+
 func TestStickyHealthyDoesNotChangeBootMode(t *testing.T) {
 	t.Parallel()
 	c := run(t, cat(fastHealth, env("BOP_MODE", "unhealthy"), []string{image})...)
