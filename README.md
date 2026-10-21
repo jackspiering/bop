@@ -191,7 +191,7 @@ cosign verify ghcr.io/jackspiering/bop:0.1.0 \
 | `:0.1` | The latest patch of a minor version. |
 | `:latest` | The newest stable release. |
 | `:edge` | Every push to `main`. Moves; `bop version` shows `edge-<sha>`. |
-| `:sha-<short>` | One specific commit on `main`. |
+| `:sha-<short>` | One specific commit on `main`, pushed by that commit's `main` build. Release tags do not touch it. |
 
 Pushing a `vX.Y.Z` tag on a commit that is on `main` runs the same CI, then
 publishes the versioned tags, signs the digest and creates the GitHub Release
