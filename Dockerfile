@@ -10,8 +10,9 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/bop ./cmd/bop
 # distroless has no shell: stage the empty state dir and a PATH entry so that
-# `docker exec <container> bop ...` works.
-RUN mkdir -p /out/tmp/bop /out/usr/local/bin && ln -s /bop /out/usr/local/bin/bop
+# `docker exec <container> bop ...` works. The state dir is world-writable
+# with the sticky bit, like /tmp, so sticky modes work under any UID.
+RUN mkdir -p /out/tmp/bop /out/usr/local/bin && chmod 1777 /out/tmp/bop && ln -s /bop /out/usr/local/bin/bop
 
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 ARG VERSION=dev
@@ -26,7 +27,9 @@ LABEL org.opencontainers.image.title="bop" \
       org.opencontainers.image.version="${VERSION}"
 COPY --from=build /out/bop /bop
 COPY --from=build /out/usr/ /usr/
-COPY --from=build --chown=65532:65532 /out/tmp/bop /tmp/bop
+# Copy the parent: COPY of a directory copies its contents and creates the
+# target 0755, which would lose the 1777 mode of /tmp/bop.
+COPY --from=build --chown=65532:65532 /out/tmp/ /tmp/
 USER 65532:65532
 EXPOSE 8080
 # --start-interval needs Docker Engine 25.0 or later.

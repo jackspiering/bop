@@ -633,6 +633,20 @@ func TestNoOwnMountWarningByDefault(t *testing.T) {
 	}
 }
 
+func TestStickyAnyUID(t *testing.T) {
+	t.Parallel()
+	// Kubernetes runAsUser and OpenShift run the image as an arbitrary UID.
+	c := run(t, cat(fastHealth, []string{"--user", "1000:1000"}, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+}
+
 func TestClearOnReadOnlyRoot(t *testing.T) {
 	t.Parallel()
 	// Linux returns EROFS, not ENOENT, when removing a missing name on a

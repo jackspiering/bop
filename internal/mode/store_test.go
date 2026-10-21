@@ -49,16 +49,33 @@ func TestStoreInvalidFile(t *testing.T) {
 	}
 }
 
-func TestStoreSaveFailureExplainsReadOnly(t *testing.T) {
-	dir := t.TempDir()
-	blocker := filepath.Join(dir, "file")
-	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
-		t.Fatal(err)
+func TestExplainSaveError(t *testing.T) {
+	tests := []struct {
+		errno     syscall.Errno
+		want, not []string
+	}{
+		{syscall.EROFS, []string{"/state", "read-only"}, []string{"uid"}},
+		{syscall.EACCES, []string{"/state", "uid", "BOP_STATE_DIR"}, []string{"read-only"}},
+		{syscall.ENOSPC, []string{"no space"}, []string{"read-only", "uid"}},
+		{syscall.ENOTDIR, []string{"not a directory"}, []string{"read-only", "uid"}},
 	}
-	// A path below a regular file cannot be created, like a read-only layer.
-	err := Store{Dir: filepath.Join(blocker, "bop")}.Save(Mode{Name: Hang})
-	if err == nil || !strings.Contains(err.Error(), "read-only") {
-		t.Fatalf("Save error = %v, want read-only hint", err)
+	for _, tt := range tests {
+		t.Run(tt.errno.Error(), func(t *testing.T) {
+			err := explainSaveError("/state", &fs.PathError{Op: "open", Path: "/state/.mode-1", Err: tt.errno})
+			if !errors.Is(err, tt.errno) {
+				t.Fatalf("errors.Is(%v, %v) = false", err, tt.errno)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error lacks %q: %v", w, err)
+				}
+			}
+			for _, n := range tt.not {
+				if strings.Contains(err.Error(), n) {
+					t.Errorf("error should not mention %q: %v", n, err)
+				}
+			}
+		})
 	}
 }
 
@@ -86,5 +103,28 @@ func TestStoreClearReportsEROFSForExistingFile(t *testing.T) {
 	stubRemove(t)
 	if err := s.Clear(); !errors.Is(err, syscall.EROFS) {
 		t.Fatalf("Clear = %v, want EROFS", err)
+	}
+}
+
+func TestStoreSavePermissionDeniedHasNoReadOnlyHint(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	err := Store{Dir: dir}.Save(Mode{Name: Hang})
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Save = %v, want a permission error", err)
+	}
+	if strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("Save error blames a read-only filesystem: %v", err)
+	}
+	for _, want := range []string{dir, "BOP_STATE_DIR", "uid"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Save error lacks %q: %v", want, err)
+		}
 	}
 }

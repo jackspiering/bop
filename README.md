@@ -97,8 +97,9 @@ One structured `log/slog` text line is written to stdout per state change.
 
 ## Sticky: restart vs recreate
 
-`sticky=true` persists the mode to `$BOP_STATE_DIR/mode` (default `/tmp/bop`).
-The mode lasts exactly as long as that directory:
+`sticky=true` persists the mode to `$BOP_STATE_DIR/mode` (default `/tmp/bop`,
+writable by any UID, so `--user` and Kubernetes `runAsUser` work too). The mode
+lasts exactly as long as that directory:
 
 - **Writable layer (the default):** `docker restart` keeps it, so the mode
   survives. Recreating the container (`docker rm`, `compose up

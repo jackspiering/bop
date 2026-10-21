@@ -273,8 +273,12 @@ func TestStickyWriteFailureIsReported(t *testing.T) {
 	h.srv.Store = mode.Store{Dir: filepath.Join(blocker, "bop")}
 	_, err := h.client.Set(context.Background(), "unhealthy sticky=true")
 	var ae *APIError
-	if !errors.As(err, &ae) || !strings.Contains(ae.Message, "read-only") {
-		t.Fatalf("err = %v, want read-only explanation", err)
+	if !errors.As(err, &ae) || ae.Status != http.StatusInternalServerError || !strings.Contains(ae.Message, "cannot persist sticky mode") {
+		t.Fatalf("err = %v, want a persist failure", err)
+	}
+	// ENOTDIR is not a read-only filesystem; only EROFS gets that hint.
+	if strings.Contains(ae.Message, "read-only") {
+		t.Fatalf("err = %v blames a read-only filesystem", err)
 	}
 	if got, _ := h.client.Status(context.Background()); got.Mode != "healthy" {
 		t.Fatalf("failed sticky write still changed the mode to %q", got.Mode)

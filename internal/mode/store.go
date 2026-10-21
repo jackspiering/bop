@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Store persists the sticky mode in a single file inside Dir.
@@ -34,26 +35,38 @@ func (s Store) Load() (Mode, bool, error) {
 // Save writes m (forced sticky) atomically.
 func (s Store) Save(m Mode) error {
 	m.Sticky = true
-	hint := fmt.Errorf("sticky=true needs a writable %s: it cannot work with a read-only root filesystem", s.Dir)
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
-		return errors.Join(fmt.Errorf("cannot persist sticky mode: %w", err), hint)
+		return explainSaveError(s.Dir, err)
 	}
 	tmp, err := os.CreateTemp(s.Dir, ".mode-*")
 	if err != nil {
-		return errors.Join(fmt.Errorf("cannot persist sticky mode: %w", err), hint)
+		return explainSaveError(s.Dir, err)
 	}
 	defer os.Remove(tmp.Name())
 	if _, err := tmp.WriteString(m.String() + "\n"); err != nil {
 		tmp.Close()
-		return errors.Join(fmt.Errorf("cannot persist sticky mode: %w", err), hint)
+		return explainSaveError(s.Dir, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return errors.Join(fmt.Errorf("cannot persist sticky mode: %w", err), hint)
+		return explainSaveError(s.Dir, err)
 	}
 	if err := os.Rename(tmp.Name(), s.path()); err != nil {
-		return errors.Join(fmt.Errorf("cannot persist sticky mode: %w", err), hint)
+		return explainSaveError(s.Dir, err)
 	}
 	return nil
+}
+
+// explainSaveError wraps a Save failure and, for the two causes a user can
+// act on, says what to change. errors.Is still sees the original errno.
+func explainSaveError(dir string, err error) error {
+	wrapped := fmt.Errorf("cannot persist sticky mode: %w", err)
+	switch {
+	case errors.Is(err, syscall.EROFS):
+		return errors.Join(wrapped, fmt.Errorf("sticky=true needs a writable %s: it cannot work with a read-only root filesystem", dir))
+	case errors.Is(err, fs.ErrPermission):
+		return errors.Join(wrapped, fmt.Errorf("sticky=true needs %s to be writable by this user (uid %d); set BOP_STATE_DIR to a directory it can write", dir, os.Getuid()))
+	}
+	return wrapped
 }
 
 // removeFile is os.Remove, replaceable in tests.
