@@ -550,6 +550,27 @@ func TestStickyCleared(t *testing.T) {
 	}
 }
 
+func TestNonStickySwitchKeepsSticky(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+
+	// A non-sticky heal does not touch the file...
+	if out := mustExec(t, c, "bop", "healthy"); !strings.Contains(out, "sticky:      false") {
+		t.Fatalf("status:\n%s", out)
+	}
+	waitHealth(t, c, "healthy", 30*time.Second)
+
+	// ...so the sticky fault returns on restart.
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+}
+
 func TestStickyHealthyDoesNotChangeBootMode(t *testing.T) {
 	t.Parallel()
 	c := run(t, cat(fastHealth, env("BOP_MODE", "unhealthy"), []string{image})...)
@@ -576,6 +597,119 @@ func TestStickyOnReadOnlyRootFails(t *testing.T) {
 	// Non-sticky still works on a read-only root.
 	mustExec(t, c, "bop", "unhealthy")
 	waitHealth(t, c, "unhealthy", 30*time.Second)
+}
+
+// ownMountWarning is logged at boot when BOP_STATE_DIR is not on the root
+// filesystem, so a sticky mode lasts as long as that mount, not the container.
+const ownMountWarning = "BOP_STATE_DIR is on its own mount"
+
+func TestStickyOnTmpfsIsLostOnRestart(t *testing.T) {
+	t.Parallel()
+	// The usual read-only hardening puts a tmpfs on /tmp: sticky writes
+	// succeed, but the tmpfs is emptied on every restart.
+	c := run(t, cat(fastHealth, []string{"--read-only", "--tmpfs", "/tmp"}, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if !strings.Contains(logs(c), ownMountWarning) {
+		t.Fatalf("no %q warning at boot:\n%s", ownMountWarning, logs(c))
+	}
+	if out := mustExec(t, c, "bop", "unhealthy", "sticky=true"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      false") {
+		t.Fatalf("status:\n%s", out)
+	}
+}
+
+func TestNoOwnMountWarningByDefault(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if l := logs(c); strings.Contains(l, ownMountWarning) {
+		t.Fatalf("unexpected warning on the writable layer:\n%s", l)
+	}
+}
+
+func TestStickyAnyUID(t *testing.T) {
+	t.Parallel()
+	// Kubernetes runAsUser and OpenShift run the image as an arbitrary UID.
+	c := run(t, cat(fastHealth, []string{"--user", "1000:1000"}, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+}
+
+func TestClearOnReadOnlyRoot(t *testing.T) {
+	t.Parallel()
+	// Linux returns EROFS, not ENOENT, when removing a missing name on a
+	// read-only mount; there is nothing to clear, so these must still work.
+	for _, clear := range [][]string{{"bop", "clear"}, {"bop", "healthy", "sticky=true"}} {
+		t.Run(strings.Join(clear[1:], "-"), func(t *testing.T) {
+			t.Parallel()
+			c := run(t, cat(fastHealth, []string{"--read-only"}, []string{image})...)
+			waitHealth(t, c, "healthy", 30*time.Second)
+			mustExec(t, c, "bop", "unhealthy")
+			waitHealth(t, c, "unhealthy", 30*time.Second)
+
+			mustExec(t, c, clear...)
+			waitHealth(t, c, "healthy", 30*time.Second)
+			if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      false") {
+				t.Fatalf("status:\n%s", out)
+			}
+		})
+	}
+}
+
+// hasFile reports whether path exists in container c (distroless has no
+// shell, so ask docker cp).
+func hasFile(c, path string) bool {
+	_, err := dockerCtx(30*time.Second, "cp", c+":"+path, "-")
+	return err == nil
+}
+
+func TestStateDir(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, env("BOP_STATE_DIR", "/tmp/bop/custom"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "unhealthy", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if !hasFile(c, "/tmp/bop/custom/mode") || hasFile(c, "/tmp/bop/mode") {
+		t.Fatal("the sticky file must be at $BOP_STATE_DIR/mode and only there")
+	}
+
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status:\n%s", out)
+	}
+
+	mustExec(t, c, "bop", "clear")
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if hasFile(c, "/tmp/bop/custom/mode") {
+		t.Fatal("bop clear left $BOP_STATE_DIR/mode behind")
+	}
+}
+
+func TestStateDirUnwritable(t *testing.T) {
+	t.Parallel()
+	// uid 65532 cannot create a directory in /.
+	c := run(t, cat(fastHealth, env("BOP_STATE_DIR", "/bop-state"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	code, out := execCode(t, c, "bop", "unhealthy", "sticky=true")
+	if code == 0 || !strings.Contains(out, "/bop-state") || !strings.Contains(out, "BOP_STATE_DIR") {
+		t.Fatalf("exec = %d\n%s", code, out)
+	}
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        healthy") {
+		t.Fatalf("a failed sticky write must not change the mode:\n%s", out)
+	}
 }
 
 func instanceID(t *testing.T, c string) string {

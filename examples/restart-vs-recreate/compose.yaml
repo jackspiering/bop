@@ -2,7 +2,10 @@
 #   docker compose exec bop bop unhealthy sticky=true
 #   docker compose restart bop        # still unhealthy: same writable layer
 #   docker compose up -d --force-recreate bop   # healthy again: new layer
-# Sticky cannot work with read_only: true (bop reports the write failure).
+# A sticky mode lasts exactly as long as $BOP_STATE_DIR (default /tmp/bop).
+# With read_only: true and no writable mount there, bop reports the write
+# failure. Adding tmpfs: [/tmp] makes the write succeed, but the tmpfs is
+# emptied on every restart, so the mode is lost; a volume survives recreates.
 services:
   bop:
     image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}

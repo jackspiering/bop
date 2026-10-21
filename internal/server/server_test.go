@@ -252,6 +252,8 @@ func TestControlRejections(t *testing.T) {
 		{"crash exit=999", "0 to 255"},
 		{"crash-loop", "sticky=true"},
 		{"oom", "no memory limit"},
+		// A persisted oom would exit 2 on every restart.
+		{"oom sticky=true", "no memory limit"},
 		{"", "empty mode"},
 	}
 	for _, tt := range tests {
@@ -260,12 +262,12 @@ func TestControlRejections(t *testing.T) {
 		if !errors.As(err, &ae) || ae.Status != http.StatusBadRequest || !strings.Contains(ae.Message, tt.want) {
 			t.Errorf("Set(%q) = %v, want 400 containing %q", tt.spec, err, tt.want)
 		}
+		if _, ok, _ := h.store.Load(); ok {
+			t.Fatalf("Set(%q) persisted a rejected command", tt.spec)
+		}
 	}
 	if got, _ := h.client.Status(context.Background()); got.Mode != "healthy" {
 		t.Fatalf("rejected commands changed the mode to %q", got.Mode)
-	}
-	if _, ok, _ := h.store.Load(); ok {
-		t.Fatal("rejected command was persisted")
 	}
 }
 
@@ -458,6 +460,27 @@ func TestSticky(t *testing.T) {
 	}
 }
 
+func TestNonStickySwitchKeepsStickyFile(t *testing.T) {
+	for _, spec := range []string{"healthy", "unhealthy", "hang", "unhealthy after=1h"} {
+		t.Run(spec, func(t *testing.T) {
+			h := newHarness(t, mode.Hooks{})
+			ctx := context.Background()
+			if _, err := h.client.Set(ctx, "unhealthy sticky=true"); err != nil {
+				t.Fatal(err)
+			}
+			st, err := h.client.Set(ctx, spec)
+			if err != nil || st.Sticky {
+				t.Fatalf("Set(%q) = %+v %v, want a non-sticky switch", spec, st, err)
+			}
+			// The sticky mode must come back on the next restart.
+			m, ok, err := h.store.Load()
+			if err != nil || !ok || m.Name != mode.Unhealthy || !m.Sticky {
+				t.Fatalf("after Set(%q) stored = %+v %v %v, want sticky unhealthy", spec, m, ok, err)
+			}
+		})
+	}
+}
+
 func TestStickyWriteFailureIsReported(t *testing.T) {
 	h := newHarness(t, mode.Hooks{})
 	blocker := filepath.Join(t.TempDir(), "file")
@@ -467,8 +490,12 @@ func TestStickyWriteFailureIsReported(t *testing.T) {
 	h.srv.Store = mode.Store{Dir: filepath.Join(blocker, "bop")}
 	_, err := h.client.Set(context.Background(), "unhealthy sticky=true")
 	var ae *APIError
-	if !errors.As(err, &ae) || !strings.Contains(ae.Message, "read-only") {
-		t.Fatalf("err = %v, want read-only explanation", err)
+	if !errors.As(err, &ae) || ae.Status != http.StatusInternalServerError || !strings.Contains(ae.Message, "cannot persist sticky mode") {
+		t.Fatalf("err = %v, want a persist failure", err)
+	}
+	// ENOTDIR is not a read-only filesystem; only EROFS gets that hint.
+	if strings.Contains(ae.Message, "read-only") {
+		t.Fatalf("err = %v blames a read-only filesystem", err)
 	}
 	if got, _ := h.client.Status(context.Background()); got.Mode != "healthy" {
 		t.Fatalf("failed sticky write still changed the mode to %q", got.Mode)

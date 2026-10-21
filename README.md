@@ -79,7 +79,7 @@ Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
 | `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly because PID 1 ignores unhandled signals. |
 | `BOP_ADDR` | `:8080` | Data listener. The image's healthcheck follows its port. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener. `docker exec` inherits it from the container's environment. |
-| `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. |
+| `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. A sticky mode lasts exactly as long as this directory; see [Sticky](#sticky-restart-vs-recreate). |
 | `BOP_OOM_UNSAFE` | | `1` allows `oom` without a memory limit. It can take the host down. |
 
 ## Endpoints
@@ -101,19 +101,37 @@ One structured `log/slog` text line is written to stdout per state change.
 
 ## Sticky: restart vs recreate
 
-`sticky=true` persists the mode to `$BOP_STATE_DIR/mode` (default `/tmp/bop`),
-inside the container's writable layer:
+`sticky=true` persists the mode to `$BOP_STATE_DIR/mode` (default `/tmp/bop`,
+writable by any UID, so `--user` and Kubernetes `runAsUser` work too). The mode
+lasts exactly as long as that directory:
 
-- `docker restart` keeps the writable layer, so the mode survives.
-- Recreating the container (`docker rm`, `compose up --force-recreate`) starts
-  a fresh layer, so it does not.
+- **Writable layer (the default):** `docker restart` keeps it, so the mode
+  survives. Recreating the container (`docker rm`, `compose up
+  --force-recreate`) starts a fresh layer, so it does not.
+- **tmpfs:** a tmpfs on `/tmp` or on `BOP_STATE_DIR` is emptied on every
+  restart, so the mode is lost even by `docker restart`. That includes the
+  usual read-only hardening (`read_only: true` plus `tmpfs: [/tmp]`,
+  `docker run --read-only --tmpfs /tmp`) and Podman `--read-only`, which adds
+  a tmpfs on `/tmp` by default. The sticky write succeeds, and bop cannot tell
+  that it will not last.
+- **Volume:** a volume on `BOP_STATE_DIR` survives recreates too. See
+  [`examples/state-dir`](examples/state-dir/compose.yaml).
+- **Orchestrators that replace the container on restart** (Swarm, Kubernetes)
+  start a fresh layer every time. Put `BOP_STATE_DIR` on a volume, such as a
+  Kubernetes `emptyDir`, to keep the mode across container restarts.
+
+When `BOP_STATE_DIR` is on its own mount (a tmpfs or a volume), bop logs a
+warning at boot. It does not refuse, because some of those mounts do outlive
+the container.
 
 On start, a sticky file overrides `BOP_MODE`. `bop healthy sticky=true` and
 `bop clear` remove it. A non-sticky switch does not touch the file, so the
-sticky mode returns on the next restart. Sticky cannot work with
-`read_only: true`; bop detects the write failure, says so, and leaves the mode
-unchanged. Note that `bop crash sticky=true` makes the container crash on every
-restart; recreate it to get out.
+sticky mode returns on the next restart. With a read-only root and no writable
+mount on `BOP_STATE_DIR`, bop reports the write failure and leaves the mode
+unchanged. `bop clear` and `bop healthy sticky=true` still return to `healthy`
+on a read-only root, since there is no sticky file to remove. Note that
+`bop crash sticky=true` makes the container crash on every restart; recreate
+it to get out.
 
 ```sh
 docker exec bop bop unhealthy sticky=true
@@ -151,6 +169,7 @@ Every example uses `${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}`.
 | `BOP_ADDR`, `BOP_CONTROL_ADDR` | [`examples/custom-addr`](examples/custom-addr/compose.yaml) |
 | sidecar | [`examples/sidecar`](examples/sidecar/compose.yaml) |
 | sticky | [`examples/restart-vs-recreate`](examples/restart-vs-recreate/compose.yaml) |
+| `BOP_STATE_DIR` (sticky on a volume) | [`examples/state-dir`](examples/state-dir/compose.yaml) |
 
 The distroless image has no shell, so write healthchecks in exec form
 (`test: ["CMD", "/bop", "healthcheck"]`). `docker run --health-cmd` always uses

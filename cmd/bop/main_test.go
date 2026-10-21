@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -155,6 +156,39 @@ func TestLoadConfig(t *testing.T) {
 		if !errors.As(err, &ue) {
 			t.Errorf("loadConfig(%v) = %v, want a usage error", bad, err)
 		}
+	}
+}
+
+func TestServeInvalidStickyFile(t *testing.T) {
+	for name, write := range map[string]func(path string) error{
+		"invalid":    func(p string) error { return os.WriteFile(p, []byte("explode\n"), 0o644) },
+		"unreadable": func(p string) error { return os.Mkdir(p, 0o755) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := write(filepath.Join(dir, "mode")); err != nil {
+				t.Fatal(err)
+			}
+			var errb bytes.Buffer
+			// serve returns before binding either listener.
+			code := serve(&errb, env(map[string]string{
+				"BOP_STATE_DIR": dir, "BOP_CONTROL_ADDR": "127.0.0.1:0", "BOP_ADDR": "127.0.0.1:0",
+			}))
+			if code != 2 {
+				t.Fatalf("serve = %d, want 2 (stderr %q)", code, errb.String())
+			}
+			// bop clear needs the control listener, which never binds.
+			for _, bad := range []string{"bop clear", "Usage:"} {
+				if strings.Contains(errb.String(), bad) {
+					t.Errorf("stderr mentions %q:\n%s", bad, errb.String())
+				}
+			}
+			for _, want := range []string{filepath.Join(dir, "mode"), "recreate"} {
+				if !strings.Contains(errb.String(), want) {
+					t.Errorf("stderr lacks %q:\n%s", want, errb.String())
+				}
+			}
+		})
 	}
 }
 
