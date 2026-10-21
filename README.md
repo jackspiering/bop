@@ -35,7 +35,11 @@ ignore the 1s start interval and probe every 5s from the start.
 ## One grammar
 
 Boot and runtime use the same grammar: `<mode> [key=value ...]`. Durations are
-Go durations (`500ms`, `10s`, `2m`). Invalid input exits `2` with a usage message.
+Go durations (`500ms`, `10s`, `2m`). Invalid input exits `2`. Errors the CLI
+catches itself (grammar, arguments, `BOP_*` variables) also print the usage
+text, and a bad flag prints the command's flags. A command the running process
+rejects (a non-sticky `crash-loop`, a refused `oom`) prints only
+`bop: <reason>`.
 
 ```sh
 docker run -e BOP_MODE="crash exit=3 after=10s" ghcr.io/jackspiering/bop:edge   # at boot
@@ -69,9 +73,10 @@ a runtime switch.
 | `bop` / `bop serve` | The main process. |
 | `bop status` | Print the running process's state. |
 | `bop clear` | Back to `healthy` and remove the sticky mode. |
-| `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, else 1. Default `http://127.0.0.1:<port of BOP_ADDR>/healthz`, 1.5s timeout. Probes go direct (see below). |
-| `bop sidecar --target=URL [--interval=2s]` | See [Sidecar](#sidecar). |
+| `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, 1 otherwise, 2 on bad arguments or an invalid `BOP_ADDR`. Default `http://<host of BOP_ADDR>:<port>/healthz`, with `127.0.0.1` when the host is empty or unspecified (`0.0.0.0`, `::`); 1.5s timeout. Probes go direct (see below). |
+| `bop sidecar --target=URL [--interval=2s]` | See [Sidecar](#sidecar). Exits 2 on bad arguments. |
 | `bop version` | |
+| `bop help` | Print the usage text. `-h` on `healthcheck` or `sidecar` prints its flags. Both exit 0. |
 
 The probes (`bop healthcheck`, `bop sidecar`) and the CLI's control client go
 direct to the URL they are given: they ignore `HTTP_PROXY`, `HTTPS_PROXY` and
@@ -85,7 +90,7 @@ A proxy's own error or a redirect is never mistaken for the target's state.
 | `BOP_MODE` | `healthy` | Initial mode, same grammar as above. |
 | `BOP_START_DELAY` | `0` | Don't bind the data listener until this has passed. The control listener binds immediately. The boot mode starts at process start, not when the delay ends: `after` and `interval` include the delay, a `crash`/`crash-loop` that fires within the delay exits before the data listener binds, and `oom` allocates during the delay. |
 | `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly. Until that handler is installed the Go runtime exits 143 (SIGTERM) or 130 (SIGINT), including as PID 1; a short window remains during process startup. |
-| `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows its port. |
+| `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows it: same host and port, with `127.0.0.1` for an empty or unspecified host. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener, `[host]:port`. A bare port is refused here: `:<port>` would expose the mode-switching API to the network, so it has to be written out; use `127.0.0.1:<port>` to keep it local. `docker exec` inherits it from the container's environment. |
 | `BOP_STATE_DIR` | `/tmp/bop` | Where sticky modes are stored. A sticky mode lasts exactly as long as this directory; see [Sticky](#sticky-restart-vs-recreate). |
 | `BOP_OOM_UNSAFE` | | `1` skips the `oom` guard (no limit, a limit at or above host memory, unlimited swap). It can take the host down. |

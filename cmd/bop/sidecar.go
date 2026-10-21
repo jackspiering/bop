@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -91,6 +92,9 @@ func sidecar(args []string, stderr io.Writer) int {
 	target := fs.String("target", "", "base URL of the bop to watch, e.g. http://127.0.0.1:8080 (required)")
 	interval := fs.Duration("interval", 2*time.Second, "poll interval")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *target == "" || fs.NArg() > 0 || *interval <= 0 {

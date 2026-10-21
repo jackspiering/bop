@@ -25,9 +25,14 @@ Usage:
   bop <mode> [key=value ...]       switch the running process (docker exec <c> bop ...)
   bop clear                        back to healthy and remove the sticky mode
   bop status                       print the running process's state
-  bop healthcheck [--url=URL]      exit 0 if URL (default: own /healthz) returns 2xx
-  bop sidecar --target=URL         watch another bop's /info; binds nothing
+  bop healthcheck [--url=URL]      exit 0 if URL returns 2xx, else 1 (default URL:
+                                   /healthz on BOP_ADDR's host and port, 127.0.0.1
+                                   for an empty or wildcard host)
+  bop sidecar --target=URL [--interval=2s]
+                                   watch another bop's /info; binds nothing
   bop version
+  bop help
+Invalid input exits 2. Probes go direct: no proxy, and a redirect is a failure.
 
 Modes:
   healthy

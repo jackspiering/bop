@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -43,8 +44,11 @@ func defaultHealthURL(addr string) (string, error) {
 func healthcheck(args []string, stderr io.Writer, getenv func(string) string) int {
 	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	url := fs.String("url", "", "URL to probe (default: http://127.0.0.1:<port of BOP_ADDR>/healthz)")
+	url := fs.String("url", "", "URL to probe (default: http://<host of BOP_ADDR>:<port>/healthz, 127.0.0.1 for an empty or unspecified host)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() > 0 {

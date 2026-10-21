@@ -56,7 +56,7 @@ func TestRunUsageErrorsExit2(t *testing.T) {
 func TestRunUsageMentionsModes(t *testing.T) {
 	var out, errb bytes.Buffer
 	run([]string{"explode"}, &out, &errb, env(nil))
-	for _, want := range []string{"unknown mode", "Usage:", "crash-loop", "BOP_ON_SIGTERM"} {
+	for _, want := range []string{"unknown mode", "Usage:", "crash-loop", "BOP_ON_SIGTERM", "--interval", "bop help"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("usage message lacks %q:\n%s", want, errb.String())
 		}
@@ -77,6 +77,13 @@ func TestRunVersionAndHelp(t *testing.T) {
 		out.Reset()
 		if code := run(args, &out, &errb, env(nil)); code != 0 || !strings.Contains(out.String(), "Usage:") {
 			t.Errorf("run(%v) = %d, want 0 with usage", args, code)
+		}
+	}
+	// -h on a subcommand is a request for help too: flag help on stderr, exit 0.
+	for _, args := range [][]string{{"healthcheck", "-h"}, {"sidecar", "--help"}} {
+		errb.Reset()
+		if code := run(args, &out, &errb, env(nil)); code != 0 || !strings.Contains(errb.String(), "Usage of") {
+			t.Errorf("run(%v) = %d, want 0 with flag help (stderr %q)", args, code, errb.String())
 		}
 	}
 }
