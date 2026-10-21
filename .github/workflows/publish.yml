@@ -112,14 +112,15 @@ jobs:
           else
             echo "value=edge-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
+      # Push by digest only. No public tag moves until the digest is signed and
+      # verified ("Tag the verified digest" below).
       - name: Build and push
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.version.outputs.value }}
@@ -141,6 +142,27 @@ jobs:
           cosign verify "${IMAGE}@${DIGEST}" \
             --certificate-identity-regexp '^https://github\.com/jackspiering/bop/\.github/workflows/publish\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      # The tags come in through env, never inline ${{ }}: the tag trigger
+      # glob allows arbitrary suffixes.
+      - name: Tag the verified digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then args+=(-t "$tag"); fi
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            got="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')"
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::$tag resolves to $got, not $DIGEST"
+              exit 1
+            fi
+            echo "$tag -> $got"
+          done <<< "$TAGS"
 
   release:
     name: GitHub Release

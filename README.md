@@ -205,7 +205,8 @@ metadata. The workflow refuses any other tag before it pushes anything.
 re-running an older workflow run, leaves them where they are.
 
 All tags are signed the same way, so the `cosign verify` command above works
-for any of them.
+for any of them. The image is pushed by digest first, and a tag only moves to
+that digest after it is signed and the strict `cosign verify` passes.
 
 ## Development
 
