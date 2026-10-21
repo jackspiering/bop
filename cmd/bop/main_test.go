@@ -34,9 +34,17 @@ func TestRunUsageErrorsExit2(t *testing.T) {
 		{"healthcheck", "--bogus"},
 		{"sidecar"},
 		{"sidecar", "--target=not-a-url"},
+		{"status", "x"},
+		{"status", "sticky=true"},
+		{"version", "x"},
+		{"--version", "x"},
+		{""},
+		{"clear", "sticky=true"},
+		{"clear", "sticky=false"},
 	} {
 		var out, errb bytes.Buffer
-		if code := run(args, &out, &errb, env(nil)); code != 2 {
+		// An unreachable control address: a network call would fail with 1, not 2.
+		if code := run(args, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": "127.0.0.1:1"})); code != 2 {
 			t.Errorf("run(%v) = %d, want 2 (stderr %q)", args, code, errb.String())
 		}
 		if errb.Len() == 0 {
@@ -63,6 +71,13 @@ func TestRunVersionAndHelp(t *testing.T) {
 	out.Reset()
 	if code := run([]string{"help"}, &out, &errb, env(nil)); code != 0 || !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("help = %d", code)
+	}
+	// help stays lenient: anything after it still prints the usage and exits 0.
+	for _, args := range [][]string{{"help", "crash"}, {"-h", "x"}, {"--help", "x", "y"}} {
+		out.Reset()
+		if code := run(args, &out, &errb, env(nil)); code != 0 || !strings.Contains(out.String(), "Usage:") {
+			t.Errorf("run(%v) = %d, want 0 with usage", args, code)
+		}
 	}
 }
 

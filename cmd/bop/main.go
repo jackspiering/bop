@@ -64,19 +64,30 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		}
 		return serve(stderr, getenv)
 	case "status":
+		if len(args) > 1 {
+			return usageError(stderr, "%s takes no arguments, got %q", args[0], args[1:])
+		}
 		return execCommand(stdout, stderr, getenv, "")
 	case "healthcheck":
 		return healthcheck(args[1:], stderr, getenv)
 	case "sidecar":
 		return sidecar(args[1:], stderr)
 	case "version", "--version":
+		if len(args) > 1 {
+			return usageError(stderr, "%s takes no arguments, got %q", args[0], args[1:])
+		}
 		fmt.Fprintf(stdout, "bop %s\n", version)
 		return 0
 	case "help", "-h", "--help":
+		// Deliberately lenient: `bop help <anything>` prints the usage.
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
-	return execCommand(stdout, stderr, getenv, strings.Join(args, " "))
+	spec := strings.Join(args, " ")
+	if _, err := mode.ParseCommand(spec); err != nil {
+		return usageError(stderr, "%v", err)
+	}
+	return execCommand(stdout, stderr, getenv, spec)
 }
 
 func usageError(stderr io.Writer, format string, args ...any) int {
@@ -84,13 +95,10 @@ func usageError(stderr io.Writer, format string, args ...any) int {
 	return 2
 }
 
-// execCommand sends spec to the running process. An empty spec asks for status.
+// execCommand sends spec, already validated by mode.ParseCommand, to the
+// running process. An empty spec asks for status; run never passes an empty
+// spec otherwise, because ParseCommand rejects it.
 func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec string) int {
-	if spec != "" {
-		if _, err := mode.ParseCommand(spec); err != nil {
-			return usageError(stderr, "%v", err)
-		}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
