@@ -9,8 +9,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackspiering/bop/internal/mode"
@@ -139,8 +143,9 @@ func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // ControlHandler serves the CLI API: GET /status, POST /mode, POST /clear.
-// Anything that shares the network namespace can call it.
-func (s *Server) ControlHandler() http.Handler {
+// addr is BOP_CONTROL_ADDR. Anything that shares the network namespace can
+// call it, but requests from browsers are rejected (see cliOnly).
+func (s *Server) ControlHandler(addr string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.state())
@@ -174,7 +179,58 @@ func (s *Server) ControlHandler() http.Handler {
 		}
 		writeJSON(w, http.StatusOK, s.state())
 	})
-	return mux
+	return cliOnly(addr, mux)
+}
+
+// cliOnly rejects requests the bop CLI never sends, so a web page cannot use
+// the browser to reach the control listener. Browsers attach Origin to every
+// non-GET request and Sec-Fetch-* to most; a DNS-rebinding page is caught by
+// its Host. Every route, present and future, goes through it.
+func cliOnly(addr string, next http.Handler) http.Handler {
+	configured, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		configured = addr
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != "" || hasSecFetch(r.Header) {
+			writeError(w, http.StatusForbidden, errors.New("the control listener only accepts requests from the bop CLI"))
+			return
+		}
+		if !allowedHost(r.Host, configured) {
+			writeError(w, http.StatusForbidden, errors.New("the control listener only accepts requests from the bop CLI (unexpected Host header)"))
+			return
+		}
+		if r.Method == http.MethodPost {
+			if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
+				writeError(w, http.StatusUnsupportedMediaType, errors.New("content type must be application/json"))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func hasSecFetch(h http.Header) bool {
+	for k := range h {
+		if strings.HasPrefix(k, "Sec-Fetch-") {
+			return true
+		}
+	}
+	return false
+}
+
+// allowedHost reports whether a request's Host names the control listener:
+// an IP literal, localhost, or the host part of BOP_CONTROL_ADDR (which the
+// CLI dials as given).
+func allowedHost(hostport, configured string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return true
+	}
+	return strings.EqualFold(host, "localhost") || (configured != "" && strings.EqualFold(host, configured))
 }
 
 // apply validates, persists (if sticky) and activates m.
