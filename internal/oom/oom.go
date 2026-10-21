@@ -147,9 +147,26 @@ func meminfo(path string) (memTotal, swapTotal int64, err error) {
 
 // Run allocates and touches rate MiB per second until stop is closed or the
 // kernel kills the process. Released memory is left to the garbage collector.
-func Run(rate int, stop <-chan struct{}) {
-	const ticks = 10
+func Run(rate int, stop <-chan struct{}) { run(rate, stop, touch) }
+
+const (
+	ticks = 10
+	// maxChunk bounds a single allocation. The Go runtime maps a large object
+	// in one mmap and dies with "out of memory" (exit 2) if the kernel refuses
+	// to commit it, so a tick is split into chunks the cgroup can kill us in.
+	maxChunk = 64 << 20
+)
+
+// plan splits one tick's allocation at rate MiB/s into count chunks of size
+// chunk, rounded up.
+func plan(rate int) (chunk, count int) {
 	perTick := max(rate*mib/ticks, pageSize)
+	chunk = min(perTick, maxChunk)
+	return chunk, (perTick + chunk - 1) / chunk
+}
+
+func run(rate int, stop <-chan struct{}, alloc func(int) []byte) {
+	chunk, count := plan(rate)
 	held := make([][]byte, 0, 1024)
 	t := time.NewTicker(time.Second / ticks)
 	defer t.Stop()
@@ -158,7 +175,14 @@ func Run(rate int, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			held = append(held, touch(perTick))
+		}
+		for range count {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			held = append(held, alloc(chunk))
 		}
 	}
 }

@@ -470,6 +470,15 @@ func TestOOMViaExec(t *testing.T) {
 	})
 }
 
+// At the maximum rate a tick is about 100 GiB; allocated in one piece the Go
+// runtime dies with "out of memory" (exit 2) instead of the cgroup killing it.
+func TestOOMMaxRate(t *testing.T) {
+	t.Parallel()
+	expectOOMKilled(t, func(t *testing.T) string {
+		return run(t, cat(oomFlags(), env("BOP_MODE", "oom rate=1048576"), []string{image})...)
+	})
+}
+
 func TestOOMRefusedWithoutLimit(t *testing.T) {
 	t.Parallel()
 	c := run(t, image)

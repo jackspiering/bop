@@ -172,3 +172,47 @@ func TestCheckResolvesOwnCgroup(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanChunks(t *testing.T) {
+	for _, rate := range []int{1, 64, 640, 1 << 20} {
+		chunk, count := plan(rate)
+		perTick := rate * mib / ticks
+		if chunk > maxChunk || chunk < pageSize {
+			t.Errorf("rate %d: chunk = %d, want at most %d", rate, chunk, maxChunk)
+		}
+		if got := chunk * count; got < perTick || got-perTick >= chunk {
+			t.Errorf("rate %d: %d chunks of %d = %d bytes per tick, want about %d", rate, count, chunk, got, perTick)
+		}
+	}
+}
+
+// At the maximum rate a tick is about 100 GiB. The fake allocator holds
+// nothing, records each size and closes stop part-way through the first tick.
+func TestRunStopsBetweenChunks(t *testing.T) {
+	stop := make(chan struct{})
+	var sizes []int
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run(1<<20, stop, func(n int) []byte {
+			sizes = append(sizes, n)
+			if len(sizes) == 3 {
+				close(stop)
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not stop between chunks")
+	}
+	if len(sizes) != 3 {
+		t.Fatalf("allocated %d chunks after stop was closed at the 3rd, want 3", len(sizes))
+	}
+	for _, n := range sizes {
+		if n > maxChunk {
+			t.Fatalf("allocation of %d bytes, want at most %d", n, maxChunk)
+		}
+	}
+}
