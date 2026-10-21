@@ -108,44 +108,65 @@ func (p *composeProject) container(service string) string {
 // TestExamplesRun brings each example up and checks its behaviour from
 // Docker's point of view. Long timers are not waited out: the docker-run tests
 // cover that behaviour, here the aim is to prove the example is wired right.
+// Every examples/<name>/compose.yaml needs an entry in exampleChecks.
 func TestExamplesRun(t *testing.T) {
 	t.Parallel()
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(root, "examples", "*", "compose.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no examples found: %v", err)
+	}
+	dirs := map[string]bool{}
+	for _, f := range files {
+		name := filepath.Base(filepath.Dir(f))
+		dirs[name] = true
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			check, ok := exampleChecks[name]
+			if !ok {
+				t.Fatalf("examples/%s has no TestExamplesRun check; add one to exampleChecks", name)
+			}
+			check(t)
+		})
+	}
+	for name := range exampleChecks {
+		if !dirs[name] {
+			t.Errorf("exampleChecks[%q] has no examples/%s/compose.yaml", name, name)
+		}
+	}
+}
 
-	t.Run("healthy", func(t *testing.T) {
-		t.Parallel()
+// exampleChecks holds one check per example, keyed by its directory name.
+var exampleChecks = map[string]func(t *testing.T){
+	"healthy": func(t *testing.T) {
 		c := upExample(t, "healthy", "bop").container("bop")
 		waitHealth(t, c, "healthy", 40*time.Second)
-	})
-
-	t.Run("unhealthy", func(t *testing.T) {
-		t.Parallel()
+	},
+	"unhealthy": func(t *testing.T) {
 		c := upExample(t, "unhealthy", "bop").container("bop")
 		waitHealth(t, c, "healthy", 40*time.Second)
 		if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "unhealthy after=30s") {
 			t.Fatalf("status:\n%s", out)
 		}
-	})
-
-	t.Run("crash", func(t *testing.T) {
-		t.Parallel()
+	},
+	"crash": func(t *testing.T) {
 		c := upExample(t, "crash").container("bop")
 		waitExited(t, c, 60*time.Second)
 		if got := exitCode(t, c); got != 3 {
 			t.Fatalf("exit code = %d, want 3", got)
 		}
-	})
-
-	t.Run("crash-loop", func(t *testing.T) {
-		t.Parallel()
+	},
+	"crash-loop": func(t *testing.T) {
 		c := upExample(t, "crash-loop").container("bop")
 		waitFor(t, c, 60*time.Second, "a restart", func() bool {
 			return inspect(t, c, "{{.RestartCount}}") != "0"
 		})
 		assertDieExitCodes(t, c, 1)
-	})
-
-	t.Run("oom", func(t *testing.T) {
-		t.Parallel()
+	},
+	"oom": func(t *testing.T) {
 		c := upExample(t, "oom").container("bop")
 		waitExited(t, c, 60*time.Second)
 		if got := exitCode(t, c); got != 137 {
@@ -155,10 +176,8 @@ func TestExamplesRun(t *testing.T) {
 		if got := inspect(t, c, "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}"); got != "134217728 134217728" {
 			t.Fatalf("memory limits = %q", got)
 		}
-	})
-
-	t.Run("hang", func(t *testing.T) {
-		t.Parallel()
+	},
+	"hang": func(t *testing.T) {
 		c := upExample(t, "hang", "bop").container("bop")
 		// Unhealthy once the image's start period (10s) has passed.
 		waitHealth(t, c, "unhealthy", 60*time.Second)
@@ -167,10 +186,8 @@ func TestExamplesRun(t *testing.T) {
 		}
 		mustExec(t, c, "bop", "healthy")
 		waitHealth(t, c, "healthy", 30*time.Second)
-	})
-
-	t.Run("start-delay", func(t *testing.T) {
-		t.Parallel()
+	},
+	"start-delay": func(t *testing.T) {
 		c := upExample(t, "start-delay", "bop").container("bop")
 		waitHealth(t, c, "starting", 10*time.Second)
 		mustExec(t, c, "bop", "status")
@@ -179,10 +196,8 @@ func TestExamplesRun(t *testing.T) {
 			t.Fatalf("data listener during the delay: healthcheck = %d\n%s", code, out)
 		}
 		waitHealth(t, c, "healthy", 60*time.Second)
-	})
-
-	t.Run("sigterm", func(t *testing.T) {
-		t.Parallel()
+	},
+	"sigterm": func(t *testing.T) {
 		p := upExample(t, "sigterm")
 		c := p.container("bop")
 		waitFor(t, c, 30*time.Second, "running", func() bool { return inspect(t, c, "{{.State.Running}}") == "true" })
@@ -197,27 +212,21 @@ func TestExamplesRun(t *testing.T) {
 		if got := exitCode(t, c); got != 137 {
 			t.Fatalf("exit code = %d, want 137", got)
 		}
-	})
-
-	t.Run("custom-addr", func(t *testing.T) {
-		t.Parallel()
+	},
+	"custom-addr": func(t *testing.T) {
 		c := upExample(t, "custom-addr", "bop").container("bop")
 		waitHealth(t, c, "healthy", 40*time.Second)
 		mustExec(t, c, "bop", "status")
-	})
-
-	t.Run("sidecar", func(t *testing.T) {
-		t.Parallel()
+	},
+	"sidecar": func(t *testing.T) {
 		p := upExample(t, "sidecar", "parent")
 		parent, sidecar := p.container("parent"), p.container("sidecar")
 		waitHealth(t, parent, "healthy", 40*time.Second)
 		waitHealth(t, sidecar, "healthy", 60*time.Second)
 		mustDocker(t, "restart", "-t", "5", parent)
 		waitHealth(t, sidecar, "unhealthy", 90*time.Second)
-	})
-
-	t.Run("restart-vs-recreate", func(t *testing.T) {
-		t.Parallel()
+	},
+	"restart-vs-recreate": func(t *testing.T) {
 		p := upExample(t, "restart-vs-recreate", "bop")
 		c := p.container("bop")
 		// The example's start_period replaces the image's 10s (0s would not).
@@ -235,10 +244,8 @@ func TestExamplesRun(t *testing.T) {
 			t.Fatalf("recreate: %v\n%s", err, out)
 		}
 		waitHealth(t, p.container("bop"), "healthy", 40*time.Second)
-	})
-
-	t.Run("state-dir", func(t *testing.T) {
-		t.Parallel()
+	},
+	"state-dir": func(t *testing.T) {
 		p := upExample(t, "state-dir", "bop")
 		c := p.container("bop")
 		if got := inspect(t, c, "{{.Config.Healthcheck.StartPeriod}}"); got != "1ms" {
@@ -260,5 +267,5 @@ func TestExamplesRun(t *testing.T) {
 		if out := mustExec(t, c2, "bop", "status"); !strings.Contains(out, "sticky:      true") {
 			t.Fatalf("status:\n%s", out)
 		}
-	})
+	},
 }
