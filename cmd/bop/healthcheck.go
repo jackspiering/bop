@@ -6,25 +6,23 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 )
 
 const healthcheckTimeout = 1500 * time.Millisecond
 
-// defaultHealthURL points at the local data listener derived from BOP_ADDR.
-func defaultHealthURL(addr string) string {
-	if !strings.Contains(addr, ":") {
-		addr = ":" + addr // a bare port
-	}
-	host, port, err := net.SplitHostPort(addr)
+// defaultHealthURL points at the local data listener derived from BOP_ADDR,
+// which it parses exactly as the listener does.
+func defaultHealthURL(addr string) (string, error) {
+	addr, err := parseListenAddr("BOP_ADDR", addr)
 	if err != nil {
-		return "http://127.0.0.1:8080/healthz"
+		return "", err
 	}
+	host, port, _ := net.SplitHostPort(addr)
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, port) + "/healthz"
+	return "http://" + net.JoinHostPort(host, port) + "/healthz", nil
 }
 
 func healthcheck(args []string, stderr io.Writer, getenv func(string) string) int {
@@ -38,7 +36,11 @@ func healthcheck(args []string, stderr io.Writer, getenv func(string) string) in
 		return usageError(stderr, "healthcheck takes no arguments, got %q", fs.Args())
 	}
 	if *url == "" {
-		*url = defaultHealthURL(envOr(getenv, "BOP_ADDR", defaultAddr))
+		u, err := defaultHealthURL(envOr(getenv, "BOP_ADDR", defaultAddr))
+		if err != nil {
+			return usageError(stderr, "%v", err)
+		}
+		*url = u
 	}
 
 	client := http.Client{Timeout: healthcheckTimeout}

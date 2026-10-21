@@ -43,8 +43,8 @@ Environment (boot only):
   BOP_MODE         initial mode, same grammar (default healthy)
   BOP_START_DELAY  don't bind the data listener for this long
   BOP_ON_SIGTERM   exit:<code> | ignore | delay:<dur> (default exit:0)
-  BOP_ADDR         data listener (default :8080)
-  BOP_CONTROL_ADDR control listener (default 127.0.0.1:9901)
+  BOP_ADDR         data listener, [host]:port or a bare port (default :8080)
+  BOP_CONTROL_ADDR control listener, [host]:port (default 127.0.0.1:9901)
   BOP_STATE_DIR    sticky state directory (default /tmp/bop)
   BOP_OOM_UNSAFE   1 allows oom without a memory limit
 `
@@ -94,11 +94,13 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client := server.NewClient(envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr))
-	var (
-		st  server.State
-		err error
-	)
+	// Parsed like serve parses it, so a bare port reaches the same listener.
+	addr, err := parseControlAddr(envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr))
+	if err != nil {
+		return usageError(stderr, "%v", err)
+	}
+	client := server.NewClient(addr)
+	var st server.State
 	if spec == "" {
 		st, err = client.Status(ctx)
 	} else {

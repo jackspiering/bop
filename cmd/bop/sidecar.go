@@ -80,6 +80,12 @@ func poll(ctx context.Context, client *http.Client, infoURL string) (string, err
 }
 
 func sidecar(args []string, stderr io.Writer) int {
+	// Same reason as serve: install the handler before flag parsing and the
+	// first poll, so a stop during startup follows the process exit path
+	// instead of the runtime's 143/130. A residual window remains during init.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
 	fs := flag.NewFlagSet("sidecar", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	target := fs.String("target", "", "base URL of the bop to watch, e.g. http://127.0.0.1:8080 (required)")
@@ -97,9 +103,6 @@ func sidecar(args []string, stderr io.Writer) int {
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	log.Info("sidecar starting", "version", version, "target", u, "interval", interval.String())
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	client := &http.Client{Timeout: healthcheckTimeout}
 	w := &watcher{log: log, target: u}

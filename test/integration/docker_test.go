@@ -349,6 +349,24 @@ func TestInvalidUsageExits2(t *testing.T) {
 	}
 }
 
+// A malformed address is a usage error at boot, not a data-listener failure
+// once BOP_START_DELAY has passed.
+func TestInvalidAddrExits2BeforeStartDelay(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+	c := run(t, cat(env("BOP_ADDR", "nope"), env("BOP_START_DELAY", "20s"), []string{image})...)
+	waitExited(t, c, 30*time.Second)
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("exited after %s, want immediately (not after the 20s start delay)", d)
+	}
+	if got := exitCode(t, c); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+	if out := logs(c); !strings.Contains(out, `invalid BOP_ADDR="nope"`) || !strings.Contains(out, "Usage:") {
+		t.Fatalf("expected a usage message, got:\n%s", out)
+	}
+}
+
 func oomFlags() []string { return []string{"--memory=64m", "--memory-swap=64m"} }
 
 // expectOOMKilled starts a container with start, waits for it to die and
@@ -416,6 +434,35 @@ func TestOOMRefusedWithoutLimit(t *testing.T) {
 	if inspect(t, boot, "{{.State.OOMKilled}}") != "false" {
 		t.Fatal("must not have been OOM killed")
 	}
+
+	// A refused sticky oom persists nothing, so it cannot come back.
+	sticky := run(t, cat(env("BOP_MODE", "oom sticky=true"), []string{image})...)
+	waitExited(t, sticky, 30*time.Second)
+	if got := exitCode(t, sticky); got != 2 {
+		t.Fatalf("boot oom sticky=true without limit: exit code = %d, want 2", got)
+	}
+	if hasStickyFile(t, sticky) {
+		t.Fatal("a refused oom sticky=true left /tmp/bop/mode behind")
+	}
+}
+
+func TestOOMStickyAtBootPersists(t *testing.T) {
+	t.Parallel()
+	var c string // the last attempt's container
+	expectOOMKilled(t, func(t *testing.T) string {
+		c = run(t, cat(oomFlags(), env("BOP_MODE", "oom rate=32 sticky=true"), []string{image})...)
+		return c
+	})
+	if !hasStickyFile(t, c) {
+		t.Fatal("oom sticky=true with a memory limit did not persist /tmp/bop/mode")
+	}
+}
+
+// hasStickyFile reports whether the container (running or not) has a sticky file.
+func hasStickyFile(t *testing.T, c string) bool {
+	t.Helper()
+	_, err := docker(t, "cp", c+":/tmp/bop/mode", "-")
+	return err == nil
 }
 
 func TestHang(t *testing.T) {
@@ -439,16 +486,69 @@ func TestHang(t *testing.T) {
 
 func TestStartDelay(t *testing.T) {
 	t.Parallel()
-	c := run(t, cat(env("BOP_START_DELAY", "8s"), []string{image})...)
+	const delay = 8 * time.Second
+	t0 := time.Now() // before docker run, so the container starts at or after t0
+	c := run(t, cat(env("BOP_START_DELAY", delay.String()), []string{image})...)
 	waitHealth(t, c, "starting", 5*time.Second)
 	// The control listener is up while the data listener is not.
 	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        healthy") {
 		t.Fatalf("status during delay:\n%s", out)
 	}
-	if health(t, c) != "starting" {
-		t.Fatalf("health during the delay = %s, want starting", health(t, c))
+	code, out := execCode(t, c, "bop", "healthcheck")
+	l := logs(c)
+	if time.Since(t0) >= delay {
+		t.Fatalf("checks finished after BOP_START_DELAY=%s; host too slow to observe the delay", delay)
+	}
+	// Not bound at all (refused), not merely bound and not serving (timeout).
+	if code != 1 || !strings.Contains(out, "connection refused") {
+		t.Fatalf("data listener during the delay: healthcheck = %d\n%s", code, out)
+	}
+	if strings.Contains(l, "listener=data") {
+		t.Fatalf("data listener bound during the delay:\n%s", l)
 	}
 	waitHealth(t, c, "healthy", 40*time.Second)
+	// The bind happens at process start + delay >= t0 + delay.
+	if d := time.Since(t0); d < delay {
+		t.Fatalf("healthy after %s, before BOP_START_DELAY=%s", d, delay)
+	}
+}
+
+// The boot mode is set at process start, so its timers include
+// BOP_START_DELAY (documented under BOP_START_DELAY in the README).
+func TestStartDelayTimersCountFromProcessStart(t *testing.T) {
+	t.Parallel()
+	const delay = 8 * time.Second
+	t.Run("unhealthy after", func(t *testing.T) {
+		t.Parallel()
+		t0 := time.Now()
+		c := run(t, cat(env("BOP_START_DELAY", delay.String()), env("BOP_MODE", "unhealthy after=3s"), []string{image})...)
+		waitFor(t, c, delay, "unhealthy in bop status", func() bool {
+			_, out := execCode(t, c, "bop", "status")
+			return strings.Contains(out, "health:      unhealthy")
+		})
+		code, out := execCode(t, c, "bop", "healthcheck")
+		if time.Since(t0) >= delay {
+			t.Skip("host too slow to observe the delay")
+		}
+		if code != 1 || !strings.Contains(out, "connection refused") {
+			t.Fatalf("data listener should still be unbound: healthcheck = %d\n%s", code, out)
+		}
+	})
+	t.Run("crash after", func(t *testing.T) {
+		t.Parallel()
+		t0 := time.Now()
+		c := run(t, cat(env("BOP_START_DELAY", delay.String()), env("BOP_MODE", "crash exit=3 after=2s"), []string{image})...)
+		waitExited(t, c, 30*time.Second)
+		if d := time.Since(t0); d >= delay {
+			t.Fatalf("crash after=2s exited after %s, want before BOP_START_DELAY=%s", d, delay)
+		}
+		if got := exitCode(t, c); got != 3 {
+			t.Fatalf("exit code = %d, want 3", got)
+		}
+		if strings.Contains(logs(c), "listener=data") {
+			t.Fatal("the data listener bound before the crash")
+		}
+	})
 }
 
 func stop(t *testing.T, c string, seconds int) time.Duration {
@@ -502,6 +602,54 @@ func TestSigtermDelay(t *testing.T) {
 	}
 	if got := exitCode(t, c); got != 0 {
 		t.Fatalf("exit code = %d, want 0 (a clean exit after the delay)", got)
+	}
+}
+
+func TestSigintFollowsPolicy(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(env("BOP_ON_SIGTERM", "exit:7"), []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustDocker(t, "kill", "-s", "INT", c)
+	waitExited(t, c, 10*time.Second)
+	if got := exitCode(t, c); got != 7 {
+		t.Fatalf("exit code after SIGINT = %d, want 7", got)
+	}
+}
+
+func TestSigtermDuringStartDelay(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(env("BOP_START_DELAY", "60s"), env("BOP_ON_SIGTERM", "exit:5"), []string{image})...)
+	waitFor(t, c, 20*time.Second, "control listener", func() bool {
+		code, _ := execCode(t, c, "bop", "status")
+		return code == 0
+	})
+	if code, out := execCode(t, c, "bop", "healthcheck"); code != 1 {
+		t.Fatalf("healthcheck during the start delay = %d, want 1\n%s", code, out)
+	}
+	if d := stop(t, c, 20); d > 10*time.Second {
+		t.Fatalf("docker stop took %s", d)
+	}
+	if got := exitCode(t, c); got != 5 {
+		t.Fatalf("exit code = %d, want 5", got)
+	}
+}
+
+func TestSidecarStopExits0(t *testing.T) {
+	t.Parallel()
+	c := run(t, image, "sidecar", "--target=http://127.0.0.1:1", "--interval=200ms")
+	// Not "sidecar starting": it is the first poll's result that proves the
+	// sidecar is past startup.
+	waitFor(t, c, 20*time.Second, "target unreachable", func() bool {
+		return strings.Contains(logs(c), "target unreachable")
+	})
+	if d := stop(t, c, 20); d > 5*time.Second {
+		t.Fatalf("docker stop took %s", d)
+	}
+	if got := exitCode(t, c); got != 0 {
+		t.Fatalf("exit code = %d, want 0", got)
+	}
+	if l := logs(c); !strings.Contains(l, "sidecar stopping") {
+		t.Fatalf("no 'sidecar stopping' log:\n%s", l)
 	}
 }
 
@@ -712,6 +860,38 @@ func TestStateDirUnwritable(t *testing.T) {
 	}
 }
 
+// TestExecBopInRunningContainer: `docker exec <c> bop` (looking for help) runs
+// a second serve. It must fail on the busy control address before it logs,
+// writes or chowns anything, even as root, so the next start is unaffected.
+func TestExecBopInRunningContainer(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, env("BOP_MODE", "unhealthy sticky=true"), []string{image})...)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	mustExec(t, c, "bop", "clear")
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if hasStickyFile(t, c) {
+		t.Fatal("bop clear left the sticky file")
+	}
+
+	out, err := docker(t, "exec", "-u", "0", c, "bop")
+	if err == nil {
+		t.Fatalf("docker exec bop succeeded:\n%s", out)
+	}
+	if !strings.Contains(out, "127.0.0.1:9901 is already in use") || strings.Contains(out, "msg=starting") {
+		t.Fatalf("docker exec bop output:\n%s", out)
+	}
+	if hasStickyFile(t, c) {
+		t.Fatal("docker exec bop wrote a sticky file")
+	}
+
+	// The next start comes up normally (BOP_MODE recreates its sticky file).
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "sticky:      true") {
+		t.Fatalf("status after restart:\n%s", out)
+	}
+}
+
 func instanceID(t *testing.T, c string) string {
 	t.Helper()
 	for _, line := range strings.Split(mustExec(t, c, "bop", "status"), "\n") {
@@ -736,6 +916,34 @@ func TestCustomAddresses(t *testing.T) {
 	if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9902") {
 		t.Fatalf("listeners not on the configured addresses:\n%s", out)
 	}
+}
+
+// A bare BOP_ADDR port is shorthand for ":port"; the listener and the image's
+// healthcheck must agree on it. A bare BOP_CONTROL_ADDR port is refused, so
+// the control API is never exposed by accident.
+func TestBarePortAddresses(t *testing.T) {
+	t.Parallel()
+	t.Run("data", func(t *testing.T) {
+		t.Parallel()
+		c := run(t, cat(fastHealth, env("BOP_ADDR", "9000"), []string{image})...)
+		waitHealth(t, c, "healthy", 30*time.Second)
+		mustExec(t, c, "bop", "unhealthy")
+		waitHealth(t, c, "unhealthy", 30*time.Second)
+		if out := logs(c); !strings.Contains(out, "addr=[::]:9000") || !strings.Contains(out, "addr=127.0.0.1:9901") {
+			t.Fatalf("listeners not on the expected addresses:\n%s", out)
+		}
+	})
+	t.Run("control", func(t *testing.T) {
+		t.Parallel()
+		c := run(t, cat(env("BOP_CONTROL_ADDR", "9902"), []string{image})...)
+		waitExited(t, c, 30*time.Second)
+		if got := exitCode(t, c); got != 2 {
+			t.Fatalf("exit code = %d, want 2", got)
+		}
+		if out := logs(c); !strings.Contains(out, "use 127.0.0.1:9902") {
+			t.Fatalf("expected a hint to keep it local, got:\n%s", out)
+		}
+	})
 }
 
 func TestSidecarSharesParentNetworkNamespace(t *testing.T) {

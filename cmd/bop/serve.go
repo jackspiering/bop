@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +18,9 @@ import (
 	"github.com/jackspiering/bop/internal/oom"
 	"github.com/jackspiering/bop/internal/server"
 )
+
+// memoryMaxPath is the cgroup file the oom guard reads; tests point it elsewhere.
+var memoryMaxPath = oom.MemoryMaxPath
 
 // config is the boot-time configuration, parsed from BOP_* variables.
 type config struct {
@@ -42,19 +47,88 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.sigterm, err = mode.ParseSigterm(getenv("BOP_ON_SIGTERM")); err != nil {
 		return c, err
 	}
-	c.addr = envOr(getenv, "BOP_ADDR", defaultAddr)
-	c.controlAddr = envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)
+	if c.addr, err = parseListenAddr("BOP_ADDR", envOr(getenv, "BOP_ADDR", defaultAddr)); err != nil {
+		return c, err
+	}
+	if c.controlAddr, err = parseControlAddr(envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)); err != nil {
+		return c, err
+	}
 	c.store = mode.Store{Dir: envOr(getenv, "BOP_STATE_DIR", defaultStateDir)}
 	c.oomUnsafe = getenv("BOP_OOM_UNSAFE") == "1"
 	return c, nil
 }
 
+// parseListenAddr checks a listen address without resolving it, so that a
+// typo fails at boot rather than when the data listener binds after
+// BOP_START_DELAY. It accepts [host]:port with a numeric port, and a bare port
+// ("9000"), which it normalises to ":9000". The listeners and the
+// healthcheck's default URL both use it, so they accept the same forms.
+func parseListenAddr(name, v string) (string, error) {
+	addr := v
+	if !strings.Contains(addr, ":") {
+		addr = ":" + addr
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		_, err = strconv.ParseUint(port, 10, 16)
+	}
+	if err != nil {
+		return "", &mode.UsageError{Msg: fmt.Sprintf("invalid %s=%q: expected [host]:port or a bare port", name, v)}
+	}
+	return addr, nil
+}
+
+// parseControlAddr is parseListenAddr without the bare-port shorthand: the
+// control API switches modes, so binding it to all interfaces must be spelled
+// out (":9902"), not implied by "9902". serve and the exec CLI both use it.
+func parseControlAddr(v string) (string, error) {
+	if _, err := strconv.ParseUint(v, 10, 16); err == nil {
+		return "", &mode.UsageError{Msg: fmt.Sprintf("invalid BOP_CONTROL_ADDR=%q: expected [host]:port; "+
+			"use 127.0.0.1:%s to keep the control listener local (or :%s for all interfaces)", v, v, v)}
+	}
+	return parseListenAddr("BOP_CONTROL_ADDR", v)
+}
+
 func serve(stderr io.Writer, getenv func(string) string) int {
+	// Install the handler before any boot work: until signal.Notify runs, the Go
+	// runtime's default handler turns SIGTERM/SIGINT into exit 143/130 and
+	// BOP_ON_SIGTERM is ignored. The buffer holds signals that arrive during boot.
+	// A residual window remains during runtime init, before main runs.
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigs)
+
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	cfg, err := loadConfig(getenv)
 	if err != nil {
 		return usageError(stderr, "%v", err)
+	}
+
+	// The control listener binds before anything else has side effects, so a
+	// second `bop` started in a running container (docker exec <c> bop) fails
+	// here without touching the sticky file. It binds before the start delay.
+	controlLn, err := net.Listen("tcp", cfg.controlAddr)
+	if errors.Is(err, syscall.EADDRINUSE) {
+		fmt.Fprintf(stderr, "bop: %s is already in use; bop may already be running in this container. Use 'bop status' or 'bop help'\n", cfg.controlAddr)
+		return 1
+	}
+	if err != nil {
+		log.Error("control listener", "err", err)
+		return 1
+	}
+	served := false
+	defer func() {
+		if !served { // a boot check failed; serveHTTP owns it otherwise
+			controlLn.Close()
+		}
+	}()
+
+	checkOOM := func() error {
+		if cfg.oomUnsafe {
+			return nil
+		}
+		return oom.Check(memoryMaxPath)
 	}
 
 	// bop cannot tell a tmpfs (emptied on every restart) from a volume or an
@@ -64,20 +138,14 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 			"(a tmpfs is emptied on every restart, a volume survives a recreate)", "dir", cfg.store.Dir)
 	}
 
-	// A sticky file overrides BOP_MODE; BOP_MODE with sticky=true creates it.
-	boot := cfg.boot
-	switch stored, ok, err := cfg.store.Load(); {
-	case err != nil:
+	boot, err := bootMode(cfg.store, cfg.boot, checkOOM, log)
+	// An oom refusal is a configuration mistake, reported like the one from
+	// machine.Set below; a bad or unwritable sticky file is not.
+	if ue, ok := err.(*mode.UsageError); ok {
+		return usageError(stderr, "%v", ue)
+	}
+	if err != nil {
 		return bootError(stderr, err)
-	case ok:
-		log.Info("sticky mode overrides BOP_MODE", "sticky", stored.String(), "BOP_MODE", cfg.boot.String())
-		boot = stored
-	case boot.Sticky:
-		if boot.Name == mode.Healthy {
-			boot.Sticky = false
-		} else if err := cfg.store.Save(boot); err != nil {
-			return bootError(stderr, err)
-		}
 	}
 
 	machine := mode.NewMachine(mode.Hooks{
@@ -89,12 +157,7 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 			log.Info("allocating memory until the cgroup kills this process", "mib_per_s", rate)
 			oom.Run(rate, stop)
 		},
-		CheckOOM: func() error {
-			if cfg.oomUnsafe {
-				return nil
-			}
-			return oom.Check(oom.MemoryMaxPath)
-		},
+		CheckOOM: checkOOM,
 		OnChange: func(s mode.Snapshot) {
 			log.Info("state", "mode", s.Mode.String(), "healthy", s.Healthy)
 		},
@@ -103,21 +166,12 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	log.Info("starting", "version", version, "pid", os.Getpid(), "instance_id", srv.InstanceID(),
 		"addr", cfg.addr, "control_addr", cfg.controlAddr, "start_delay", cfg.startDelay.String(),
 		"on_sigterm", envOr(getenv, "BOP_ON_SIGTERM", "exit:0"))
-
-	// The control listener binds immediately, before the start delay.
-	controlLn, err := net.Listen("tcp", cfg.controlAddr)
-	if err != nil {
-		log.Error("control listener", "err", err)
-		return 1
-	}
+	served = true
 	go serveHTTP(log, "control", controlLn, srv.ControlHandler(cfg.controlAddr))
 
 	if err := machine.Set(boot, 0); err != nil {
 		return usageError(stderr, "%v", err)
 	}
-
-	sigs := make(chan os.Signal, 4)
-	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
 		time.Sleep(cfg.startDelay)
@@ -139,6 +193,33 @@ func bootError(stderr io.Writer, err error) int {
 	return 2
 }
 
+// bootMode applies the boot precedence: a sticky file overrides BOP_MODE, and
+// a sticky BOP_MODE creates the file. `healthy sticky=true` persists nothing,
+// and a sticky oom is refused, as a *mode.UsageError, before it is persisted.
+func bootMode(store mode.Store, env mode.Mode, checkOOM func() error, log *slog.Logger) (mode.Mode, error) {
+	stored, ok, err := store.Load()
+	switch {
+	case err != nil:
+		return mode.Mode{}, err
+	case ok:
+		log.Info("sticky mode overrides BOP_MODE", "sticky", stored.String(), "BOP_MODE", env.String())
+		return stored, nil
+	case env.Sticky && env.Name == mode.Healthy:
+		env.Sticky = false
+	case env.Sticky:
+		// Refuse oom before persisting it, as Server.apply does at runtime.
+		if env.Name == mode.OOM {
+			if err := checkOOM(); err != nil {
+				return mode.Mode{}, &mode.UsageError{Msg: err.Error()}
+			}
+		}
+		if err := store.Save(env); err != nil {
+			return mode.Mode{}, err
+		}
+	}
+	return env, nil
+}
+
 func serveHTTP(log *slog.Logger, name string, ln net.Listener, h http.Handler) {
 	log.Info("listening", "listener", name, "addr", ln.Addr().String())
 	s := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}
@@ -149,8 +230,10 @@ func serveHTTP(log *slog.Logger, name string, ln net.Listener, h http.Handler) {
 }
 
 // handleSignals blocks and returns the exit code once SIGTERM/SIGINT is
-// handled according to the BOP_ON_SIGTERM policy. PID 1 gets no default
-// signal handling from the kernel, so these must be handled explicitly.
+// handled according to the BOP_ON_SIGTERM policy. The Go runtime, not the
+// kernel, handles an uncaught SIGTERM/SIGINT by exiting 143/130, including
+// when the process is PID 1. The handler is installed at the start of serve;
+// a residual window remains during runtime init, before main runs.
 func handleSignals(log *slog.Logger, st mode.Sigterm, sigs <-chan os.Signal) int {
 	var delayed <-chan time.Time
 	for {
