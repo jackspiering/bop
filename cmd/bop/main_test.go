@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackspiering/bop/internal/mode"
+	"github.com/jackspiering/bop/internal/oom"
 	"github.com/jackspiering/bop/internal/server"
 )
 
@@ -504,9 +505,9 @@ func TestServeStickyOOMRefusedBeforePersist(t *testing.T) {
 	if err := os.WriteFile(memMax, []byte("max\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := memoryMaxPath
-	memoryMaxPath = memMax
-	t.Cleanup(func() { memoryMaxPath = old })
+	old := checkOOMLimit
+	checkOOMLimit = func() error { return oom.Check(memMax) }
+	t.Cleanup(func() { checkOOMLimit = old })
 
 	dir := t.TempDir()
 	var out, errb bytes.Buffer

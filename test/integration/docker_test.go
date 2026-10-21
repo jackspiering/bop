@@ -521,6 +521,24 @@ func hasStickyFile(t *testing.T, c string) bool {
 	return err == nil
 }
 
+// With a host cgroup namespace /sys/fs/cgroup is the host's root cgroup, so the
+// limit must be read from the process's own cgroup.
+func TestOOMHostCgroupns(t *testing.T) {
+	t.Parallel()
+	expectOOMKilled(t, func(t *testing.T) string {
+		return run(t, cat(oomFlags(), []string{"--cgroupns=host"}, env("BOP_MODE", "oom rate=32"), []string{image})...)
+	})
+
+	c := run(t, cat([]string{"--cgroupns=host"}, env("BOP_MODE", "oom"), []string{image})...)
+	waitExited(t, c, 30*time.Second)
+	if got := exitCode(t, c); got != 2 {
+		t.Fatalf("host cgroupns without limit: exit code = %d, want 2\n%s", got, logs(c))
+	}
+	if out := logs(c); !strings.Contains(out, "BOP_OOM_UNSAFE") {
+		t.Fatalf("refusal must mention BOP_OOM_UNSAFE:\n%s", out)
+	}
+}
+
 func TestHang(t *testing.T) {
 	t.Parallel()
 	c := run(t, cat(fastHealth, []string{image})...)
