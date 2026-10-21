@@ -183,6 +183,13 @@ cosign verify ghcr.io/jackspiering/bop:0.1.0 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+What the strict form proves: the image was signed by `publish.yml` in this
+repository, running either on `main` or on a `vX.Y.Z[-PRERELEASE]` tag. It
+does not name a commit. It relies on two repository settings: a tag ruleset
+lets only repository admins create, move or delete `v*` tags, and `main` only
+changes through pull requests that pass CI (see "Maintainer: one-time steps").
+The workflow also refuses to publish a tag that is not on `main`.
+
 ## Releases
 
 | Tag | Meaning |
@@ -202,7 +209,8 @@ and mark the release as a pre-release. A release tag must be strict
 metadata. The workflow refuses any other tag before it pushes anything.
 
 `:X.Y.Z` never changes once published. The workflow refuses to publish a
-version that already exists in the registry. A re-run of a release run ("Re-run
+version that already exists in the registry, and the tag ruleset stops a
+release tag from being moved or deleted. A re-run of a release run ("Re-run
 all jobs" or "Re-run failed jobs") is safe: it reuses the published digest
 instead of rebuilding, and skips a GitHub Release that already exists.
 `:latest`, `:X.Y` and `:edge` only move forward: tagging an older version, or
@@ -225,9 +233,20 @@ count). They need Docker Engine 25.0+ and cgroup v2.
 
 ## Maintainer: one-time steps
 
-After the first publish on `main`, set the ghcr package visibility to **Public**
-in the package settings (github.com → your profile → Packages → `bop` →
-Package settings), and confirm the package is linked to this repository.
+- After the first publish on `main`, set the ghcr package visibility to
+  **Public** in the package settings (github.com → your profile → Packages →
+  `bop` → Package settings), and confirm the package is linked to this
+  repository.
+- Add a tag ruleset (Settings → Rules → Rulesets → New tag ruleset): target
+  `refs/tags/v*`, enforcement **Active**, with **Restrict creations**,
+  **Restrict updates**, **Restrict deletions** and **Block force pushes**, and
+  only the Repository admin role on the bypass list. Only admins can then
+  create release tags, and a published `vX.Y.Z` cannot be moved or deleted.
+  Check it with `gh api repos/jackspiering/bop/rulesets`.
+- Protect `main` (Settings → Branches): require a pull request, require the
+  four CI checks (`Lint and unit tests`, `Docker build`,
+  `Integration (ubuntu-24.04)`, `Integration (ubuntu-24.04-arm)`), and allow
+  no force pushes or deletions.
 
 ## Prior art
 
