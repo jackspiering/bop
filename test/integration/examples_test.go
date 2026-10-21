@@ -113,6 +113,7 @@ func TestExamplesRun(t *testing.T) {
 		waitFor(t, c, 60*time.Second, "a restart", func() bool {
 			return inspect(t, c, "{{.RestartCount}}") != "0"
 		})
+		assertDieExitCodes(t, c, 1)
 	})
 
 	t.Run("oom", func(t *testing.T) {

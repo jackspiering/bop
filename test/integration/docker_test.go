@@ -164,6 +164,40 @@ func exitCode(t *testing.T, name string) int {
 }
 
 // execCode runs a command in the container and returns its exit code and output.
+// dieExitCodes returns the exit code of every exit so far. State.ExitCode
+// is reset to 0 when a restart policy starts the container again, so a
+// crash-looping container's codes are read from its die events.
+func dieExitCodes(t *testing.T, name string) []int {
+	t.Helper()
+	out := mustDocker(t, "events", "--since", inspect(t, name, "{{.Created}}"), "--until", "0s",
+		"--filter", "container="+name, "--filter", "event=die", "--format", "{{.Actor.Attributes.exitCode}}")
+	var codes []int
+	for _, f := range strings.Fields(out) {
+		n, err := strconv.Atoi(f)
+		if err != nil {
+			t.Fatalf("die event exit code %q: %v", f, err)
+		}
+		codes = append(codes, n)
+	}
+	return codes
+}
+
+// assertDieExitCodes waits until a die event is visible (it can lag behind
+// RestartCount) and fails unless every exit so far used want.
+func assertDieExitCodes(t *testing.T, name string, want int) {
+	t.Helper()
+	var codes []int
+	waitFor(t, name, 30*time.Second, "a die event", func() bool {
+		codes = dieExitCodes(t, name)
+		return len(codes) > 0
+	})
+	for _, c := range codes {
+		if c != want {
+			t.Fatalf("exit codes = %v, want all %d", codes, want)
+		}
+	}
+}
+
 func execCode(t *testing.T, name string, args ...string) (int, string) {
 	t.Helper()
 	out, err := docker(t, append([]string{"exec", name}, args...)...)
@@ -311,6 +345,27 @@ func TestCrashLoop(t *testing.T) {
 		n, _ := strconv.Atoi(inspect(t, c, "{{.RestartCount}}"))
 		return n >= 2
 	})
+	assertDieExitCodes(t, c, 1)
+}
+
+func TestCrashLoopWaitsForInterval(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat([]string{"--restart=always"}, env("BOP_MODE", "crash-loop interval=3s exit=5"), []string{image})...)
+	time.Sleep(time.Second)
+	if n := inspect(t, c, "{{.RestartCount}}"); n != "0" {
+		t.Fatalf("RestartCount = %s one second in, want 0 before interval=3s", n)
+	}
+	if got := inspect(t, c, "{{.State.Status}}"); got != "running" {
+		t.Fatalf("status = %s one second in, want running", got)
+	}
+	if codes := dieExitCodes(t, c); len(codes) != 0 {
+		t.Fatalf("exited before interval=3s with %v", codes)
+	}
+	waitFor(t, c, 60*time.Second, "RestartCount >= 1", func() bool {
+		n, _ := strconv.Atoi(inspect(t, c, "{{.RestartCount}}"))
+		return n >= 1
+	})
+	assertDieExitCodes(t, c, 5)
 }
 
 func TestCrashLoopRejectedWhenNotSticky(t *testing.T) {
@@ -330,11 +385,12 @@ func TestCrashLoopViaStickyExec(t *testing.T) {
 	t.Parallel()
 	c := run(t, cat([]string{"--restart=always"}, []string{image})...)
 	waitHealth(t, c, "healthy", 30*time.Second)
-	mustExec(t, c, "bop", "crash-loop", "interval=1s", "sticky=true")
+	mustExec(t, c, "bop", "crash-loop", "interval=1s", "exit=6", "sticky=true")
 	waitFor(t, c, 60*time.Second, "RestartCount >= 2", func() bool {
 		n, _ := strconv.Atoi(inspect(t, c, "{{.RestartCount}}"))
 		return n >= 2
 	})
+	assertDieExitCodes(t, c, 6)
 }
 
 func TestInvalidUsageExits2(t *testing.T) {

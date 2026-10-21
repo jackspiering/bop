@@ -2,8 +2,10 @@ package mode
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -131,19 +133,76 @@ func TestMachineSwitchCancelsPendingCrash(t *testing.T) {
 	}
 }
 
-func TestMachineCrashLoopUsesInterval(t *testing.T) {
-	codes := make(chan int, 1)
-	mc := NewMachine(Hooks{Exit: func(c int) { codes <- c }})
-	if err := mc.Set(Mode{Name: CrashLoop, Exit: 9, Interval: 50 * time.Millisecond}, 0); err != nil {
-		t.Fatal(err)
+// Once a scheduled exit has passed its staleness check, a switch must not be
+// acknowledged before the exit hook returns (in production it never does).
+func TestMachineSwitchCannotOvertakeCommittedExit(t *testing.T) {
+	for _, m := range []Mode{
+		{Name: Crash, Exit: 3},
+		{Name: CrashLoop, Exit: 3, Interval: time.Millisecond},
+	} {
+		t.Run(string(m.Name), func(t *testing.T) {
+			var mc *Machine
+			setDone := make(chan struct{})
+			overtaken := make(chan bool, 1)
+			mc = NewMachine(Hooks{Exit: func(int) {
+				go func() {
+					_ = mc.Set(Mode{Name: Healthy}, 0)
+					close(setDone)
+				}()
+				select {
+				case <-setDone:
+					overtaken <- true
+				case <-time.After(50 * time.Millisecond):
+					overtaken <- false
+				}
+			}})
+			if err := mc.Set(m, 0); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case o := <-overtaken:
+				if o {
+					t.Fatal("Set(healthy) returned after the exit had committed")
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("exit did not fire")
+			}
+			select {
+			case <-setDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Set(healthy) still blocked after the exit hook returned")
+			}
+		})
 	}
-	select {
-	case c := <-codes:
-		if c != 9 {
-			t.Fatalf("exit code = %d", c)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("crash-loop did not fire")
+}
+
+func TestMachineCrashLoopUsesInterval(t *testing.T) {
+	tests := []struct {
+		interval, minDelay, want time.Duration
+	}{
+		{80 * time.Millisecond, 0, 80 * time.Millisecond},
+		{80 * time.Millisecond, 10 * time.Millisecond, 80 * time.Millisecond},
+		{10 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("interval=%s minDelay=%s", tt.interval, tt.minDelay), func(t *testing.T) {
+			// The bubble's fake clock makes the elapsed time exact.
+			synctest.Test(t, func(t *testing.T) {
+				codes := make(chan int, 1)
+				mc := NewMachine(Hooks{Exit: func(c int) { codes <- c }})
+				start := time.Now()
+				if err := mc.Set(Mode{Name: CrashLoop, Exit: 9, Interval: tt.interval}, tt.minDelay); err != nil {
+					t.Fatal(err)
+				}
+				c := <-codes
+				if c != 9 {
+					t.Fatalf("exit code = %d, want 9", c)
+				}
+				if got := time.Since(start); got != tt.want {
+					t.Fatalf("crash-loop exited after %s, want %s", got, tt.want)
+				}
+			})
+		})
 	}
 }
 
@@ -202,5 +261,39 @@ func TestMachineOnChange(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no notification at the scheduled flip")
+	}
+}
+
+// Each Set must report the snapshot it installed, even when another Set
+// lands before the notification. The gap between installing and reporting
+// has no hook to pause in, so concurrent Sets are raced against each other.
+func TestMachineOnChangeReportsInstalledState(t *testing.T) {
+	const n = 64
+	var (
+		mu       sync.Mutex
+		reported = map[time.Duration]int{}
+	)
+	mc := NewMachine(Hooks{OnChange: func(s Snapshot) {
+		mu.Lock()
+		reported[s.Mode.After]++
+		mu.Unlock()
+	}})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			// A unique After per Set; an hour, so no flip fires.
+			if err := mc.Set(Mode{Name: Unhealthy, After: time.Hour + time.Duration(i)}, 0); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i := range n {
+		if got := reported[time.Hour+time.Duration(i)]; got != 1 {
+			t.Fatalf("Set %d was reported %d times, want once (reports: %v)", i, got, reported)
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -476,6 +477,77 @@ func TestNonStickySwitchKeepsStickyFile(t *testing.T) {
 			m, ok, err := h.store.Load()
 			if err != nil || !ok || m.Name != mode.Unhealthy || !m.Sticky {
 				t.Fatalf("after Set(%q) stored = %+v %v %v, want sticky unhealthy", spec, m, ok, err)
+			}
+		})
+	}
+}
+
+// A sticky command paused between persisting and activating must not let a
+// second command interleave, or the sticky file and the running mode
+// disagree.
+func TestConcurrentStickyCommandsAgree(t *testing.T) {
+	for _, b := range []string{"hang sticky=true", "clear"} {
+		t.Run(b, func(t *testing.T) {
+			// The first CheckOOM is apply's pre-check; the second runs inside
+			// Machine.Set, after Save. Pause A there.
+			paused := make(chan struct{})
+			release := make(chan struct{})
+			var calls atomic.Int32
+			h := newHarness(t, mode.Hooks{CheckOOM: func() error {
+				if calls.Add(1) == 2 {
+					close(paused)
+					<-release
+				}
+				return nil
+			}})
+			ctx := context.Background()
+
+			aErr := make(chan error, 1)
+			go func() {
+				_, err := h.client.Set(ctx, "oom sticky=true")
+				aErr <- err
+			}()
+			<-paused
+
+			bErr := make(chan error, 1)
+			go func() {
+				_, err := h.client.Set(ctx, b)
+				bErr <- err
+			}()
+			// Unserialised, B completes while A is paused. Serialised, B waits
+			// for A, so only bound the wait.
+			var bDone bool
+			select {
+			case err := <-bErr:
+				bDone = true
+				if err != nil {
+					t.Fatalf("B: %v", err)
+				}
+			case <-time.After(200 * time.Millisecond):
+			}
+			close(release)
+			if err := <-aErr; err != nil {
+				t.Fatalf("A: %v", err)
+			}
+			if !bDone {
+				if err := <-bErr; err != nil {
+					t.Fatalf("B: %v", err)
+				}
+			}
+
+			stored, ok, err := h.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, err := h.client.Status(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case ok && (!st.Sticky || st.Mode != stored.String()):
+				t.Fatalf("sticky file holds %q but status is %q (sticky=%v)", stored, st.Mode, st.Sticky)
+			case !ok && st.Sticky:
+				t.Fatalf("no sticky file but status is %q (sticky=%v)", st.Mode, st.Sticky)
 			}
 		})
 	}

@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackspiering/bop/internal/mode"
@@ -58,6 +59,10 @@ type Server struct {
 	Store   mode.Store
 	Log     *slog.Logger
 	Version string
+
+	// mu serialises control commands, so the sticky file and the running
+	// mode always come from the same command. Reads do not take it.
+	mu sync.Mutex
 
 	instanceID string
 	hostname   string
@@ -227,8 +232,11 @@ func allowedHost(hostport, configured string) bool {
 	return strings.EqualFold(host, "localhost") || (configured != "" && strings.EqualFold(host, configured))
 }
 
-// apply validates, persists (if sticky) and activates m.
+// apply validates, persists (if sticky) and activates m, one command at a
+// time.
 func (s *Server) apply(m mode.Mode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if m.Name == mode.Clear {
 		if err := s.Store.Clear(); err != nil {
 			return err
