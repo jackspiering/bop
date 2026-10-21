@@ -89,9 +89,15 @@ func (mc *Machine) Set(m Mode, minDelay time.Duration) error {
 		mc.scheduleExit(gen, max(m.Interval, minDelay), m.Exit)
 	case Unhealthy:
 		if m.After > 0 {
-			mc.schedule(gen, m.After, func() {
-				if mc.hooks.OnChange != nil {
-					mc.hooks.OnChange(mc.Snapshot())
+			mc.timer = time.AfterFunc(m.After, func() {
+				// Take the snapshot under mu with the gen check, so a Set in
+				// between cannot make this report a different mode.
+				mc.mu.Lock()
+				stale := mc.gen != gen
+				snap := mc.snapshotLocked()
+				mc.mu.Unlock()
+				if !stale && mc.hooks.OnChange != nil {
+					mc.hooks.OnChange(snap)
 				}
 			})
 		}
@@ -104,10 +110,11 @@ func (mc *Machine) Set(m Mode, minDelay time.Duration) error {
 			}
 		})
 	}
+	snap := mc.snapshotLocked()
 	mc.mu.Unlock()
 
 	if mc.hooks.OnChange != nil {
-		mc.hooks.OnChange(mc.Snapshot())
+		mc.hooks.OnChange(snap)
 	}
 	return nil
 }
@@ -141,6 +148,11 @@ func (mc *Machine) scheduleExit(gen uint64, d time.Duration, code int) {
 func (mc *Machine) Snapshot() Snapshot {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
+	return mc.snapshotLocked()
+}
+
+// snapshotLocked must be called with mu held.
+func (mc *Machine) snapshotLocked() Snapshot {
 	s := Snapshot{Mode: mc.cur, SetAt: mc.setAt, Healthy: true}
 	if mc.cur.Name == Unhealthy && mc.now().Sub(mc.setAt) >= mc.cur.After {
 		s.Healthy = false

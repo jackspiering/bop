@@ -263,3 +263,37 @@ func TestMachineOnChange(t *testing.T) {
 		t.Fatal("no notification at the scheduled flip")
 	}
 }
+
+// Each Set must report the snapshot it installed, even when another Set
+// lands before the notification. The gap between installing and reporting
+// has no hook to pause in, so concurrent Sets are raced against each other.
+func TestMachineOnChangeReportsInstalledState(t *testing.T) {
+	const n = 64
+	var (
+		mu       sync.Mutex
+		reported = map[time.Duration]int{}
+	)
+	mc := NewMachine(Hooks{OnChange: func(s Snapshot) {
+		mu.Lock()
+		reported[s.Mode.After]++
+		mu.Unlock()
+	}})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			// A unique After per Set; an hour, so no flip fires.
+			if err := mc.Set(Mode{Name: Unhealthy, After: time.Hour + time.Duration(i)}, 0); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i := range n {
+		if got := reported[time.Hour+time.Duration(i)]; got != 1 {
+			t.Fatalf("Set %d was reported %d times, want once (reports: %v)", i, got, reported)
+		}
+	}
+}
