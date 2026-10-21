@@ -1,6 +1,10 @@
 # BOP_START_DELAY: the data listener binds after 20s, so the container is
 # "starting" first. The control listener is available straight away:
 #   docker compose exec bop bop status
+# The boot mode (BOP_MODE) starts at process start, not when the delay ends:
+# with BOP_MODE="unhealthy after=30s" it is healthy for only ~10s once
+# reachable, and a crash/crash-loop that fires within 20s exits before the
+# data listener ever binds.
 services:
   bop:
     image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}

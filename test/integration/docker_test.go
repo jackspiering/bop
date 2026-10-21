@@ -513,6 +513,44 @@ func TestStartDelay(t *testing.T) {
 	}
 }
 
+// The boot mode is set at process start, so its timers include
+// BOP_START_DELAY (documented under BOP_START_DELAY in the README).
+func TestStartDelayTimersCountFromProcessStart(t *testing.T) {
+	t.Parallel()
+	const delay = 8 * time.Second
+	t.Run("unhealthy after", func(t *testing.T) {
+		t.Parallel()
+		t0 := time.Now()
+		c := run(t, cat(env("BOP_START_DELAY", delay.String()), env("BOP_MODE", "unhealthy after=3s"), []string{image})...)
+		waitFor(t, c, delay, "unhealthy in bop status", func() bool {
+			_, out := execCode(t, c, "bop", "status")
+			return strings.Contains(out, "health:      unhealthy")
+		})
+		code, out := execCode(t, c, "bop", "healthcheck")
+		if time.Since(t0) >= delay {
+			t.Skip("host too slow to observe the delay")
+		}
+		if code != 1 || !strings.Contains(out, "connection refused") {
+			t.Fatalf("data listener should still be unbound: healthcheck = %d\n%s", code, out)
+		}
+	})
+	t.Run("crash after", func(t *testing.T) {
+		t.Parallel()
+		t0 := time.Now()
+		c := run(t, cat(env("BOP_START_DELAY", delay.String()), env("BOP_MODE", "crash exit=3 after=2s"), []string{image})...)
+		waitExited(t, c, 30*time.Second)
+		if d := time.Since(t0); d >= delay {
+			t.Fatalf("crash after=2s exited after %s, want before BOP_START_DELAY=%s", d, delay)
+		}
+		if got := exitCode(t, c); got != 3 {
+			t.Fatalf("exit code = %d, want 3", got)
+		}
+		if strings.Contains(logs(c), "listener=data") {
+			t.Fatal("the data listener bound before the crash")
+		}
+	})
+}
+
 func stop(t *testing.T, c string, seconds int) time.Duration {
 	t.Helper()
 	start := time.Now()

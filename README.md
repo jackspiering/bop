@@ -57,7 +57,9 @@ the image has `bop` on `PATH`.
 | `hang` | | `/healthz` and `/info` accept the connection and never answer. A client that closes or half-closes its side gets the connection closed without a response. The process stays alive and the control listener keeps working, so `bop healthy` recovers it. |
 
 Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
-`exit` is 0 to 255.
+`exit` is 0 to 255. `after` and `interval` count from when the mode is set:
+process start for `BOP_MODE` (so they include `BOP_START_DELAY`), the exec for
+a runtime switch.
 
 ### Other commands
 
@@ -75,7 +77,7 @@ Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
 | Variable | Default | |
 |---|---|---|
 | `BOP_MODE` | `healthy` | Initial mode, same grammar as above. |
-| `BOP_START_DELAY` | `0` | Don't bind the data listener until this has passed. The control listener binds immediately. |
+| `BOP_START_DELAY` | `0` | Don't bind the data listener until this has passed. The control listener binds immediately. The boot mode starts at process start, not when the delay ends: `after` and `interval` include the delay, a `crash`/`crash-loop` that fires within the delay exits before the data listener binds, and `oom` allocates during the delay. |
 | `BOP_ON_SIGTERM` | `exit:0` | `exit:<code>`, `ignore`, or `delay:<dur>` (exit 0 once the delay has passed). `ignore` exists to test the stop timeout and SIGKILL (137). SIGTERM and SIGINT are handled explicitly. Until that handler is installed the Go runtime exits 143 (SIGTERM) or 130 (SIGINT), including as PID 1; a short window remains during process startup. |
 | `BOP_ADDR` | `:8080` | Data listener, `[host]:port` with a numeric port. A bare port such as `9000` means `:9000` (all interfaces). The image's healthcheck follows its port. |
 | `BOP_CONTROL_ADDR` | `127.0.0.1:9901` | Control listener, same form as `BOP_ADDR`. A bare port binds all interfaces, which exposes the mode-switching API to the network; use `127.0.0.1:<port>` to keep it local. `docker exec` inherits it from the container's environment. |
