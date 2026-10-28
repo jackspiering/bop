@@ -18,6 +18,7 @@ const (
 	CrashLoop = "crash-loop"
 	OOM       = "oom"
 	Hang      = "hang"
+	Closed    = "closed"
 
 	// Clear is accepted by ParseCommand only. It resets to healthy and removes
 	// the sticky file.
@@ -25,13 +26,13 @@ const (
 )
 
 // Names lists every mode, in documentation order.
-var Names = []string{Healthy, Unhealthy, Crash, CrashLoop, OOM, Hang}
+var Names = []string{Healthy, Unhealthy, Crash, CrashLoop, OOM, Hang, Closed}
 
 // Mode is a parsed mode with its arguments. Arguments that do not apply to the
 // mode are left zero.
 type Mode struct {
 	Name     string
-	After    time.Duration // unhealthy, crash
+	After    time.Duration // unhealthy, crash, closed
 	Exit     int           // crash, crash-loop
 	Interval time.Duration // crash-loop
 	Rate     int           // oom, MiB/s
@@ -55,6 +56,7 @@ var allowed = map[string][]string{
 	CrashLoop: {"interval", "exit"},
 	OOM:       {"rate"},
 	Hang:      {},
+	Closed:    {"after"},
 	Clear:     {},
 }
 
@@ -178,7 +180,7 @@ func acceptList(keys []string) string {
 func (m Mode) String() string {
 	parts := []string{m.Name}
 	switch m.Name {
-	case Unhealthy:
+	case Unhealthy, Closed:
 		parts = append(parts, "after="+m.After.String())
 	case Crash:
 		parts = append(parts, "exit="+strconv.Itoa(m.Exit), "after="+m.After.String())

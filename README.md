@@ -3,8 +3,8 @@
 [![Publish](https://github.com/jackspiering/bop/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/jackspiering/bop/actions/workflows/publish.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A container that fails on demand: unhealthy, crash, crash-loop, OOM, hang and
-SIGTERM behaviours, switchable at runtime. It knows nothing about any
+A container that fails on demand: unhealthy, crash, crash-loop, OOM, hang, closed
+port and SIGTERM behaviours, switchable at runtime. It knows nothing about any
 orchestrator, so you can point it at anything that watches, heals or
 orchestrates containers: autoheal-style tools, Compose `depends_on`, restart
 policies, Swarm, sidecars.
@@ -60,6 +60,7 @@ the image has `bop` on `PATH`.
 | `crash-loop` | `interval=<dur>` (5s), `exit=<code>` (1) | Each process start exits with `code` after `interval`. Only as boot mode or with `sticky=true`; a plain exec is rejected. |
 | `oom` | `rate=<MiB/s>` (64) | Allocates and writes every page until the cgroup kills the process (exit 137, `OOMKilled=true`). Reads `memory.max` from the process's own cgroup (from `/proc/self/cgroup`, so `--cgroupns=host` works) and refuses (exit 2) unless it is a number below the host's `MemTotal`, and, on a host with swap, `memory.swap.max` is not `max`. Set `--memory-swap` equal to `--memory` (`memswap_limit` = `mem_limit`) so swap cannot delay the kill. `BOP_OOM_UNSAFE=1` skips these checks. Needs cgroup v2. |
 | `hang` | | Every request on the data port is accepted and never answered. A client that closes or half-closes its side gets the connection closed without a response. The process stays alive and the control listener keeps working, so `bop healthy` recovers it. |
+| `closed` | `after=<dur>` (0) | Serving until `after`, then the data listener is closed: the port refuses connections (`ECONNREFUSED`) while the process stays alive, so a TCP probe fails and `bop status` reports `unhealthy (closed mode is active)`. Open connections are dropped. The control listener keeps working, and `bop healthy` binds the data port again, on the same address. If that bind fails, bop exits 1. |
 
 Any mode accepts `sticky=true`, see [Sticky](#sticky-restart-vs-recreate).
 `exit` is 0 to 255. `after` and `interval` count from when the mode is set:
@@ -184,8 +185,9 @@ applies to `bop sidecar`, which serves nothing:
 
 With the `/info` override, a failing probe does not by itself mean the
 namespace was lost. It also fails while the parent is in `hang` (`/info`
-hangs too, and the sidecar logs "target unreachable"), before the parent's
-data listener binds (`BOP_START_DELAY`), and while the parent is down.
+hangs too, and the sidecar logs "target unreachable"), while it is in `closed`
+(the data port refuses connections), before the parent's data listener binds
+(`BOP_START_DELAY`), and while the parent is down.
 `unhealthy` mode on the parent does not affect it.
 
 ## Compose examples
@@ -200,6 +202,7 @@ Every example uses `${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}`.
 | `crash-loop` | [`examples/crash-loop`](examples/crash-loop/compose.yaml) |
 | `oom` | [`examples/oom`](examples/oom/compose.yaml) |
 | `hang` | [`examples/hang`](examples/hang/compose.yaml) |
+| `closed` | [`examples/closed`](examples/closed/compose.yaml) |
 | `BOP_START_DELAY` | [`examples/start-delay`](examples/start-delay/compose.yaml) |
 | `BOP_ON_SIGTERM` | [`examples/sigterm`](examples/sigterm/compose.yaml) |
 | `BOP_ADDR`, `BOP_CONTROL_ADDR` | [`examples/custom-addr`](examples/custom-addr/compose.yaml) |

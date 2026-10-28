@@ -28,6 +28,9 @@ func TestParse(t *testing.T) {
 		{in: "hang", want: Mode{Name: Hang}},
 		{in: "hang sticky=false", want: Mode{Name: Hang}},
 		{in: "hang sticky=1", want: Mode{Name: Hang, Sticky: true}},
+		{in: "closed", want: Mode{Name: Closed}},
+		{in: "closed after=5s", want: Mode{Name: Closed, After: 5 * time.Second}},
+		{in: "closed after=5s sticky=true", want: Mode{Name: Closed, After: 5 * time.Second, Sticky: true}},
 
 		{in: "", wantErr: "empty mode"},
 		{in: "   ", wantErr: "empty mode"},
@@ -49,6 +52,9 @@ func TestParse(t *testing.T) {
 		{in: "oom rate=0", wantErr: "positive integer"},
 		{in: "oom rate=fast", wantErr: "positive integer"},
 		{in: "hang sticky=maybe", wantErr: "true or false"},
+		{in: "closed exit=1", wantErr: `does not accept "exit"`},
+		{in: "closed after=soon", wantErr: "invalid after"},
+		{in: "closed after=-1s", wantErr: "must not be negative"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -91,7 +97,7 @@ func TestParseCommandClear(t *testing.T) {
 func TestStringRoundTrip(t *testing.T) {
 	for _, in := range []string{
 		"healthy", "unhealthy after=3s", "crash exit=3 after=10s", "crash-loop interval=5s exit=1",
-		"oom rate=64", "hang", "hang sticky=true", "crash-loop interval=1s exit=7 sticky=true",
+		"oom rate=64", "hang", "hang sticky=true", "closed after=0s", "closed after=5s sticky=true", "crash-loop interval=1s exit=7 sticky=true",
 	} {
 		m, err := Parse(in)
 		if err != nil {
