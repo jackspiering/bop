@@ -92,27 +92,7 @@ jobs:
       - name: Do not rebuild an existing release
         id: existing
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
-        run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            ref="${IMAGE}:${GITHUB_REF_NAME#v}"
-          else
-            ref="${IMAGE}:sha-${GITHUB_SHA::7}"
-          fi
-          if out="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}' 2>&1)"; then
-            if ! [[ $out =~ ^sha256:[0-9a-f]{64}$ ]]; then
-              echo "::error::cannot read the digest of $ref: $out"
-              exit 1
-            fi
-            if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
-              echo "::error::$ref already exists ($out); release tags are immutable, cut a new version"
-              exit 1
-            fi
-            echo "::notice::$ref already exists; re-signing and re-tagging $out instead of rebuilding"
-            echo "digest=$out" >> "$GITHUB_OUTPUT"
-          elif ! printf '%s\n' "$out" | grep -qF "$ref: not found"; then
-            echo "::error::cannot check $ref: $out"
-            exit 1
-          fi
+        run: .github/scripts/existing-release.sh
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
