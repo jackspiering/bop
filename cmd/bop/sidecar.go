@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -48,9 +47,9 @@ func (w *watcher) observe(instanceID string, err error) {
 
 // infoURL appends /info to a bare base URL and leaves explicit paths alone.
 func infoURL(target string) (string, error) {
-	u, err := url.Parse(target)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("invalid --target %q: expected a URL like http://127.0.0.1:8080", target)
+	u, err := parseProbeURL("target", target)
+	if err != nil {
+		return "", err
 	}
 	if u.Path == "" || u.Path == "/" {
 		u.Path = "/info"

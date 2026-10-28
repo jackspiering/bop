@@ -61,6 +61,9 @@ func healthcheck(args []string, stderr io.Writer, getenv func(string) string) in
 		}
 		*url = u
 	}
+	if _, err := parseProbeURL("url", *url); err != nil {
+		return usageError(stderr, "%v", err)
+	}
 
 	resp, err := newProbeClient(healthcheckTimeout).Get(*url)
 	if err != nil {
