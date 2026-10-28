@@ -237,7 +237,6 @@ func exitCode(t *testing.T, name string) int {
 	return n
 }
 
-// execCode runs a command in the container and returns its exit code and output.
 // dieExitCodes returns the exit code of every exit so far. State.ExitCode
 // is reset to 0 when a restart policy starts the container again, so a
 // crash-looping container's codes are read from its die events.
@@ -272,6 +271,7 @@ func assertDieExitCodes(t *testing.T, name string, want int) {
 	}
 }
 
+// execCode runs a command in the container and returns its exit code and output.
 func execCode(t *testing.T, name string, args ...string) (int, string) {
 	t.Helper()
 	out, err := docker(t, append([]string{"exec", name}, args...)...)
