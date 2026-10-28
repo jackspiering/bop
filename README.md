@@ -1,5 +1,7 @@
 # BoP (Broken on Purpose)
 
+![BoP, Broken on Purpose: fails on demand](docs/assets/social-preview.jpg)
+
 [![Publish](https://github.com/jackspiering/bop/actions/workflows/publish.yml/badge.svg?branch=main)](https://github.com/jackspiering/bop/actions/workflows/publish.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
