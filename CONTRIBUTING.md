@@ -27,6 +27,9 @@ same Docker daemon at once.
   an `examples/<name>/compose.yaml` that `TestExamplesRun` brings up.
 - Pin GitHub Actions to a full commit SHA with the version as a trailing
   comment, and base images by digest. Dependabot keeps both current.
+- The Go version in `go.mod` and the `golang:` tag in the `Dockerfile` must
+  match; `go test ./test/release/` fails otherwise, so a Dependabot golang tag
+  PR needs a matching `go.mod` edit.
 - The build tools are pinned by digest by hand, because Dependabot does not
   track them: the BuildKit daemon (`driver-opts: image=moby/buildkit:...` on
   every `setup-buildx-action`, the same reference in `ci.yml` and
