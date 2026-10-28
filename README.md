@@ -257,7 +257,7 @@ The workflow also refuses to publish a tag that is not on `main`.
 | `:0.1` | The highest patch of a minor version. |
 | `:latest` | The highest stable release. |
 | `:edge` | The tip of `main`. Moves; `bop version` shows `edge-<sha>`. |
-| `:sha-<short>` | One specific commit on `main`, pushed by that commit's `main` build. Release tags do not touch it. |
+| `:sha-<short>` | One specific commit on `main`, pushed by that commit's `main` build. Release tags do not touch it. Quick successive merges can skip intermediate commits, because only one publish run per ref waits in the queue. |
 
 Pushing a `vX.Y.Z` tag on a commit that is on `main` runs the same CI, then
 publishes the versioned tags, signs the digest and creates the GitHub Release
