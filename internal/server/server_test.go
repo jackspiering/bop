@@ -714,9 +714,17 @@ func TestHealthzDoesNotReadStickyFile(t *testing.T) {
 	if err := os.MkdirAll(h.store.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(h.store.Dir, "mode"), 0o644); err != nil {
+	fifo := filepath.Join(h.store.Dir, "mode")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
+	t.Cleanup(func() {
+		// Opening a FIFO O_RDWR|O_NONBLOCK never blocks and releases any handler
+		// stuck in open(2) on it, so h.data.Close can return.
+		if f, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0); err == nil {
+			f.Close()
+		}
+	})
 	if code, body := h.get(t, "/healthz"); code != 200 {
 		t.Fatalf("healthz = %d %q", code, body)
 	}
