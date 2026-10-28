@@ -71,7 +71,7 @@ a runtime switch.
 | Command | |
 |---|---|
 | `bop` / `bop serve` | The main process. |
-| `bop status` | Print the running process's state. |
+| `bop status [--json]` | Print the running process's state. `--json` prints the state as one JSON object whose fields mirror `/info` plus `healthy` and `reason`, stable across releases. |
 | `bop clear` | Back to `healthy` and remove the sticky mode. |
 | `bop healthcheck [--url=URL]` | Exit 0 if `URL` returns 2xx, 1 otherwise, 2 on bad arguments or an invalid `BOP_ADDR`. Default `http://<host of BOP_ADDR>:<port>/healthz`, with `127.0.0.1` when the host is empty or unspecified (`0.0.0.0`, `::`); 1.5s timeout. Probes go direct (see below). |
 | `bop sidecar --target=URL [--interval=2s]` | See [Sidecar](#sidecar). Exits 2 on bad arguments. |
