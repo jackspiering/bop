@@ -87,7 +87,7 @@ func (mc *Machine) Set(m Mode, minDelay time.Duration) error {
 		mc.scheduleExit(gen, max(m.After, minDelay), m.Exit)
 	case CrashLoop:
 		mc.scheduleExit(gen, max(m.Interval, minDelay), m.Exit)
-	case Unhealthy:
+	case Unhealthy, Closed:
 		if m.After > 0 {
 			mc.timer = time.AfterFunc(m.After, func() {
 				// Take the snapshot under mu with the gen check, so a Set in
@@ -154,9 +154,9 @@ func (mc *Machine) Snapshot() Snapshot {
 // snapshotLocked must be called with mu held.
 func (mc *Machine) snapshotLocked() Snapshot {
 	s := Snapshot{Mode: mc.cur, SetAt: mc.setAt, Healthy: true}
-	if mc.cur.Name == Unhealthy && mc.now().Sub(mc.setAt) >= mc.cur.After {
+	if (mc.cur.Name == Unhealthy || mc.cur.Name == Closed) && mc.now().Sub(mc.setAt) >= mc.cur.After {
 		s.Healthy = false
-		s.Reason = "unhealthy mode is active"
+		s.Reason = mc.cur.Name + " mode is active"
 	}
 	return s
 }

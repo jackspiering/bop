@@ -323,7 +323,7 @@ count). They need Docker Engine 25.0+ (to build the image), Docker Compose
   `docker exec <c> getSick` and `docker exec <c> heal`.
 
 What BoP adds: one grammar that switches every mode at runtime, plus `hang`,
-OOM, crash-loop and SIGTERM behaviours (exit code, ignore, delay), sticky
+`closed` (a data port that refuses connections while the process stays up), OOM, crash-loop and SIGTERM behaviours (exit code, ignore, delay), sticky
 restart-versus-recreate semantics, the network-namespace sidecar check, a small
 static nonroot image, and signed images with SBOM and provenance.
 

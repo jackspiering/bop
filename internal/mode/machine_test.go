@@ -271,6 +271,28 @@ func TestMachineOnChange(t *testing.T) {
 	}
 }
 
+func TestMachineClosedIsUnhealthyAfterDelay(t *testing.T) {
+	got := make(chan Snapshot, 4)
+	mc := NewMachine(Hooks{OnChange: func(s Snapshot) { got <- s }})
+	if err := mc.Set(Mode{Name: Closed, After: 50 * time.Millisecond}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if first := <-got; !first.Healthy {
+		t.Fatal("closed before after= should still be healthy")
+	}
+	select {
+	case second := <-got:
+		if second.Healthy || second.Reason != "closed mode is active" {
+			t.Fatalf("scheduled close = healthy %v, reason %q", second.Healthy, second.Reason)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no notification when closed took effect")
+	}
+	if s := mc.Snapshot(); s.Healthy {
+		t.Fatal("closed after its delay should be unhealthy in the snapshot")
+	}
+}
+
 // Each Set must report the snapshot it installed, even when another Set
 // lands before the notification. The gap between installing and reporting
 // has no hook to pause in, so concurrent Sets are raced against each other.

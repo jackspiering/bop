@@ -145,7 +145,7 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 func printState(w io.Writer, st server.State) {
 	// The machine counts hang as healthy because guard does the blocking, but
 	// the container is not: no request on the data port is ever answered.
-	// closed needs no case here: the server reports it unhealthy.
+	// closed needs no case here: the machine reports it unhealthy.
 	health := "healthy"
 	switch {
 	case modeName(st.Mode) == mode.Hang:
