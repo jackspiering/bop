@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,6 +38,8 @@ func TestRunUsageErrorsExit2(t *testing.T) {
 		{"sidecar", "--target=not-a-url"},
 		{"status", "x"},
 		{"status", "sticky=true"},
+		{"status", "--json", "x"},
+		{"status", "--yaml"},
 		{"version", "x"},
 		{"--version", "x"},
 		{""},
@@ -114,6 +117,35 @@ func TestRunExecUsesServeAddrGrammar(t *testing.T) {
 	}
 	if code := run([]string{"status"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": "nope"})); code != 2 {
 		t.Fatalf("status with BOP_CONTROL_ADDR=nope = %d, want 2", code)
+	}
+}
+
+func TestStatusJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"instance_id":"abc123","mode":"crash","sticky":true,"healthy":false,"reason":"crash"}`))
+	}))
+	defer ts.Close()
+	_, port, _ := strings.Cut(strings.TrimPrefix(ts.URL, "http://"), ":")
+	var out, errb bytes.Buffer
+	if code := run([]string{"status", "--json"}, &out, &errb, env(map[string]string{"BOP_CONTROL_ADDR": "127.0.0.1:" + port})); code != 0 {
+		t.Fatalf("status --json = %d, stderr %q", code, errb.String())
+	}
+	var st server.State
+	if err := json.Unmarshal(out.Bytes(), &st); err != nil {
+		t.Fatalf("status --json is not one JSON object: %v\n%s", err, out.String())
+	}
+	if st.Mode != "crash" || st.Healthy || !st.Sticky || st.InstanceID != "abc123" {
+		t.Fatalf("status --json = %+v", st)
+	}
+	// The fields are the ones the control API sends, so a harness sees them unchanged.
+	var fields map[string]any
+	if err := json.Unmarshal(out.Bytes(), &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"mode", "healthy", "sticky", "instance_id"} {
+		if _, ok := fields[k]; !ok {
+			t.Errorf("status --json lacks %q: %s", k, out.String())
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ Usage:
   bop [serve]                      run the main process (configured by BOP_* env)
   bop <mode> [key=value ...]       switch the running process (docker exec <c> bop ...)
   bop clear                        back to healthy and remove the sticky mode
-  bop status                       print the running process's state
+  bop status [--json]              print the running process's state (--json: one JSON object)
   bop healthcheck [--url=URL]      exit 0 if URL returns 2xx, else 1 (default URL:
                                    /healthz on BOP_ADDR's host and port, 127.0.0.1
                                    for an empty or wildcard host)
@@ -69,10 +70,11 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		}
 		return serve(stderr, getenv)
 	case "status":
-		if len(args) > 1 {
-			return usageError(stderr, "%s takes no arguments, got %q", args[0], args[1:])
+		asJSON := len(args) == 2 && args[1] == "--json"
+		if len(args) > 1 && !asJSON {
+			return usageError(stderr, "status takes no arguments except --json, got %q", args[1:])
 		}
-		return execCommand(stdout, stderr, getenv, "")
+		return execCommand(stdout, stderr, getenv, "", asJSON)
 	case "healthcheck":
 		return healthcheck(args[1:], stderr, getenv)
 	case "sidecar":
@@ -92,7 +94,7 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	if _, err := mode.ParseCommand(spec); err != nil {
 		return usageError(stderr, "%v", err)
 	}
-	return execCommand(stdout, stderr, getenv, spec)
+	return execCommand(stdout, stderr, getenv, spec, false)
 }
 
 func usageError(stderr io.Writer, format string, args ...any) int {
@@ -103,7 +105,7 @@ func usageError(stderr io.Writer, format string, args ...any) int {
 // execCommand sends spec, already validated by mode.ParseCommand, to the
 // running process. An empty spec asks for status; run never passes an empty
 // spec otherwise, because ParseCommand rejects it.
-func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec string) int {
+func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec string, asJSON bool) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -127,6 +129,13 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 		}
 		fmt.Fprintf(stderr, "bop: %v\n", err)
 		return 1
+	}
+	if asJSON {
+		if err := json.NewEncoder(stdout).Encode(st); err != nil {
+			fmt.Fprintf(stderr, "bop: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	printState(stdout, st)
 	return 0
