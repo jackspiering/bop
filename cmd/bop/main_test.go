@@ -275,11 +275,24 @@ func TestLoadConfig(t *testing.T) {
 		{"BOP_CONTROL_ADDR": "nope"},
 		{"BOP_CONTROL_ADDR": "9902"}, // would expose the control API; needs a host
 		{"BOP_CONTROL_ADDR": "127.0.0.1:70000"},
+		{"BOP_ADDR": "9901"}, // collides with the default control address 127.0.0.1:9901
+		{"BOP_ADDR": "127.0.0.1:9000", "BOP_CONTROL_ADDR": "127.0.0.1:9000"},
+		{"BOP_ADDR": ":9000", "BOP_CONTROL_ADDR": "[::1]:9000"}, // wildcard overlaps
 	} {
 		_, err := loadConfig(env(bad))
 		var ue *mode.UsageError
 		if !errors.As(err, &ue) {
 			t.Errorf("loadConfig(%v) = %v, want a usage error", bad, err)
+		}
+	}
+
+	// Different specific hosts, and port 0 (other tests rely on it), are accepted.
+	for _, ok := range []map[string]string{
+		{"BOP_ADDR": "10.0.0.1:9000", "BOP_CONTROL_ADDR": "127.0.0.1:9000"},
+		{"BOP_ADDR": "127.0.0.1:0", "BOP_CONTROL_ADDR": "127.0.0.1:0"},
+	} {
+		if _, err := loadConfig(env(ok)); err != nil {
+			t.Errorf("loadConfig(%v) = %v, want nil", ok, err)
 		}
 	}
 }

@@ -59,6 +59,10 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.controlAddr, err = parseControlAddr(envOr(getenv, "BOP_CONTROL_ADDR", defaultControlAddr)); err != nil {
 		return c, err
 	}
+	if addrsCollide(c.addr, c.controlAddr) {
+		return c, &mode.UsageError{Msg: fmt.Sprintf("invalid BOP_ADDR=%q and BOP_CONTROL_ADDR=%q: both would listen on the same port; "+
+			"give the control listener its own port (default 127.0.0.1:9901)", c.addr, c.controlAddr)}
+	}
 	c.store = mode.Store{Dir: envOr(getenv, "BOP_STATE_DIR", defaultStateDir)}
 	c.oomUnsafe = getenv("BOP_OOM_UNSAFE") == "1"
 	return c, nil
@@ -93,6 +97,25 @@ func parseControlAddr(v string) (string, error) {
 			"use 127.0.0.1:%s to keep the control listener local (or :%s for all interfaces)", v, v, v)}
 	}
 	return parseListenAddr("BOP_CONTROL_ADDR", v)
+}
+
+// addrsCollide reports whether two listen addresses, already validated by
+// parseListenAddr, would bind the same port on overlapping hosts. Hostnames
+// are not resolved, so "localhost" and "127.0.0.1" are not seen as equal.
+// Port 0 never collides: the OS picks a different port for each listener.
+func addrsCollide(a, b string) bool {
+	ha, pa, _ := net.SplitHostPort(a)
+	hb, pb, _ := net.SplitHostPort(b)
+	na, _ := strconv.ParseUint(pa, 10, 16)
+	nb, _ := strconv.ParseUint(pb, 10, 16)
+	if na != nb || na == 0 {
+		return false
+	}
+	wild := func(h string) bool {
+		ip := net.ParseIP(h)
+		return h == "" || (ip != nil && ip.IsUnspecified())
+	}
+	return wild(ha) || wild(hb) || strings.EqualFold(ha, hb)
 }
 
 func serve(stderr io.Writer, getenv func(string) string) int {
