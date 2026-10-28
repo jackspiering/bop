@@ -138,7 +138,7 @@ func printState(w io.Writer, st server.State) {
 	health := "healthy"
 	switch {
 	case modeName(st.Mode) == mode.Hang:
-		health = "hanging (/healthz and /info accept connections but never answer)"
+		health = "hanging (the data port accepts connections but never answers)"
 	case !st.Healthy:
 		health = "unhealthy (" + st.Reason + ")"
 	}

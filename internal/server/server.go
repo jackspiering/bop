@@ -147,12 +147,13 @@ func (s *Server) stickyMode() string {
 	return ""
 }
 
-// DataHandler serves /healthz and /info. In hang mode both block until the
-// mode changes. A client that closes or half-closes its side meanwhile gets
-// the connection closed with no response.
+// DataHandler serves /healthz and /info. In hang mode every request on the
+// data port blocks until the mode changes, including unknown paths and
+// methods. A client that closes or half-closes its side meanwhile gets the
+// connection closed with no response.
 func (s *Server) DataHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", s.guard(func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		st := s.liveState()
 		if !st.Healthy {
 			http.Error(w, st.Reason, http.StatusServiceUnavailable)
@@ -160,15 +161,16 @@ func (s *Server) DataHandler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "ok\n")
-	}))
-	mux.HandleFunc("GET /info", s.guard(func(w http.ResponseWriter, _ *http.Request) {
+	})
+	mux.HandleFunc("GET /info", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.state().Info)
-	}))
-	return mux
+	})
+	return s.guard(mux.ServeHTTP)
 }
 
-// guard blocks the request while the machine is in hang mode. If the client
-// goes away first it aborts the request, so nothing is ever written.
+// guard blocks every request on the data port while the machine is in hang
+// mode. If the client goes away first it aborts the request, so nothing is
+// ever written.
 func (s *Server) guard(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		for {

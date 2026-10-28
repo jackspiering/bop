@@ -144,9 +144,11 @@ func TestHangBlocksDataButNotControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := http.Client{Timeout: 300 * time.Millisecond}
-	for _, p := range []string{"/healthz", "/info"} {
-		if _, err := c.Get(h.data.URL + p); err == nil {
-			t.Fatalf("GET %s answered in hang mode", p)
+	for _, r := range []struct{ method, path string }{{"GET", "/healthz"}, {"GET", "/info"}, {"GET", "/nope"}, {"POST", "/healthz"}} {
+		req, _ := http.NewRequest(r.method, h.data.URL+r.path, nil)
+		if resp, err := c.Do(req); err == nil {
+			resp.Body.Close()
+			t.Fatalf("%s %s answered in hang mode with %d", r.method, r.path, resp.StatusCode)
 		}
 	}
 	// The control listener keeps working and recovery releases a pending request.
@@ -177,6 +179,17 @@ func TestHangBlocksDataButNotControl(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("pending request was not released by recovery")
 	}
+	if code, _ := h.get(t, "/nope"); code != 404 {
+		t.Fatalf("GET /nope after recovery = %d", code)
+	}
+	resp, err := http.Post(h.data.URL+"/healthz", "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 405 {
+		t.Fatalf("POST /healthz after recovery = %d", resp.StatusCode)
+	}
 	if l := h.dataLog.String(); l != "" {
 		t.Fatalf("data server logged:\n%s", l)
 	}
@@ -186,14 +199,14 @@ func TestHangBlocksDataButNotControl(t *testing.T) {
 // once. In hang mode it must still get no response, not an implicit 200.
 func TestHangIgnoresHalfClosedClient(t *testing.T) {
 	h := newHarness(t, mode.Hooks{})
-	rawGet := func(path string) []byte {
+	rawReq := func(reqLine string) []byte {
 		t.Helper()
 		conn, err := net.Dial("tcp", h.data.Listener.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer conn.Close()
-		if _, err := io.WriteString(conn, "GET "+path+" HTTP/1.1\r\nHost: bop\r\n\r\n"); err != nil {
+		if _, err := io.WriteString(conn, reqLine+" HTTP/1.1\r\nHost: bop\r\n\r\n"); err != nil {
 			t.Fatal(err)
 		}
 		if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
@@ -204,15 +217,15 @@ func TestHangIgnoresHalfClosedClient(t *testing.T) {
 		return b
 	}
 	// Control: a half-closed client does get an answer when healthy.
-	if b := rawGet("/healthz"); !bytes.HasPrefix(b, []byte("HTTP/1.1 200")) {
+	if b := rawReq("GET /healthz"); !bytes.HasPrefix(b, []byte("HTTP/1.1 200")) {
 		t.Fatalf("healthy: %q", b)
 	}
 	if _, err := h.client.Set(context.Background(), "hang"); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"/healthz", "/info"} {
-		if b := rawGet(p); bytes.HasPrefix(b, []byte("HTTP/")) {
-			t.Fatalf("GET %s answered in hang mode: %q", p, b)
+	for _, line := range []string{"GET /healthz", "GET /info", "GET /nope", "POST /healthz"} {
+		if b := rawReq(line); bytes.HasPrefix(b, []byte("HTTP/")) {
+			t.Fatalf("%s answered in hang mode: %q", line, b)
 		}
 	}
 	if l := h.dataLog.String(); l != "" {
