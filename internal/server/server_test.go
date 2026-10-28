@@ -673,8 +673,8 @@ func TestStatusReportsInvalidStickyFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(h.store.Dir, "mode"), []byte("explode\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var logs lockedBuffer
-	h.srv.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	logs := &syncBuffer{}
+	h.srv.Log = slog.New(slog.NewTextHandler(logs, nil))
 	for range 3 {
 		st, err := h.client.Status(context.Background())
 		if err != nil {
@@ -688,23 +688,6 @@ func TestStatusReportsInvalidStickyFile(t *testing.T) {
 	if n := strings.Count(logs.String(), "sticky mode file unusable"); n != 1 {
 		t.Fatalf("logged the warning %d times, want once:\n%s", n, logs.String())
 	}
-}
-
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  strings.Builder
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
 }
 
 // TestHealthzDoesNotReadStickyFile: with a FIFO as the sticky file, any read
