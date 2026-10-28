@@ -98,6 +98,10 @@ func TestExistingRelease(t *testing.T) {
 			dockerOut: "ERROR: " + existingImage + ":9.9.9: not found", dockerCode: 1, wantFail: true,
 		},
 		{
+			name: "tag inspect fails with other text naming the ref", env: tagEnv("1"),
+			dockerOut: "ERROR: " + tagRef + ": unauthorized", dockerCode: 1, wantFail: true, wantInOut: "cannot check " + tagRef,
+		},
+		{
 			name: "main: sha tag not found, build proceeds", env: mainEnv("1"),
 			dockerOut: "ERROR: " + shaRef + ": not found", dockerCode: 1,
 		},

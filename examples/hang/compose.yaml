@@ -1,4 +1,4 @@
-# /healthz and /info accept connections and never answer; the process stays up
+# Every request on the data port is accepted and never answered; the process stays up
 # and Docker marks it unhealthy. The control listener still works:
 #   docker compose exec bop bop healthy
 services:

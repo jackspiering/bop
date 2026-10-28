@@ -110,12 +110,6 @@ func (s *Server) state() State {
 // liveState reports the running state from the machine only.
 func (s *Server) liveState() State {
 	snap := s.Machine.Snapshot()
-	healthy, reason := snap.Healthy, snap.Reason
-	// The machine only knows unhealthy's timer. closed has no data listener to
-	// refuse a probe, so report it unhealthy (from after on) for the CLI.
-	if snap.Mode.Name == mode.Closed && time.Since(snap.SetAt) >= snap.Mode.After {
-		healthy, reason = false, "closed mode is active"
-	}
 	return State{
 		Info: Info{
 			InstanceID: s.instanceID,
@@ -126,8 +120,8 @@ func (s *Server) liveState() State {
 			Sticky:     snap.Mode.Sticky,
 			Version:    s.Version,
 		},
-		Healthy: healthy,
-		Reason:  reason,
+		Healthy: snap.Healthy,
+		Reason:  snap.Reason,
 	}
 }
 
@@ -155,8 +149,9 @@ func (s *Server) stickyMode() string {
 
 // DataHandler serves /healthz and /info. In hang mode every request on the
 // data port blocks until the mode changes, including unknown paths and
-// methods. In closed mode nothing is served: the caller closes the listener. A client that closes or half-closes its side meanwhile gets the
-// connection closed with no response.
+// methods. A client that closes or half-closes its side meanwhile gets the
+// connection closed with no response. In closed mode nothing is served: the
+// caller closes the listener.
 func (s *Server) DataHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
