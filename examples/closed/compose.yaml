@@ -1,0 +1,16 @@
+# The data port is closed (connection refused) while the process stays up, and
+# Docker marks it unhealthy. The control listener still works:
+#   docker compose exec bop bop healthy
+services:
+  bop:
+    image: ${BOP_IMAGE:-ghcr.io/jackspiering/bop:edge}
+    environment:
+      BOP_MODE: "closed"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Same as the image's own check, with timings short enough to watch.
+      test: ["CMD", "/bop", "healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 2

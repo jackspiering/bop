@@ -124,6 +124,39 @@ func TestUnhealthyAndRecover(t *testing.T) {
 	}
 }
 
+// closed has no data listener to refuse a probe, so the status the CLI reads
+// must say so; like unhealthy, it only counts once after has elapsed.
+func TestClosedReportedUnhealthy(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	ctx := context.Background()
+	for _, tc := range []struct {
+		spec    string
+		healthy bool
+		wait    time.Duration
+	}{
+		{"closed", false, 0},
+		{"closed after=1h", true, 0},
+		{"closed after=300ms", false, 350 * time.Millisecond},
+	} {
+		st, err := h.client.Set(ctx, tc.spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.wait == 0 && st.Healthy != tc.healthy {
+			t.Fatalf("Set(%q): healthy = %v, want %v", tc.spec, st.Healthy, tc.healthy)
+		}
+		time.Sleep(tc.wait)
+		st, err = h.client.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Healthy != tc.healthy || (!tc.healthy && st.Reason != "closed mode is active") {
+			t.Fatalf("%q: status healthy=%v reason=%q, want healthy=%v and reason %q when unhealthy",
+				tc.spec, st.Healthy, st.Reason, tc.healthy, "closed mode is active")
+		}
+	}
+}
+
 func TestUnhealthyAfter(t *testing.T) {
 	h := newHarness(t, mode.Hooks{})
 	if _, err := h.client.Set(context.Background(), "unhealthy after=400ms"); err != nil {

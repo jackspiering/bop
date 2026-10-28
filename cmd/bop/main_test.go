@@ -65,7 +65,7 @@ func TestRunUsageErrorsExit2(t *testing.T) {
 func TestRunUsageMentionsModes(t *testing.T) {
 	var out, errb bytes.Buffer
 	run([]string{"explode"}, &out, &errb, env(nil))
-	for _, want := range []string{"unknown mode", "Usage:", "crash-loop", "BOP_ON_SIGTERM", "--interval", "bop help"} {
+	for _, want := range []string{"unknown mode", "Usage:", "crash-loop", "closed", "BOP_ON_SIGTERM", "--interval", "bop help"} {
 		if !strings.Contains(errb.String(), want) {
 			t.Errorf("usage message lacks %q:\n%s", want, errb.String())
 		}
@@ -494,6 +494,7 @@ func TestPrintState(t *testing.T) {
 		{server.State{Info: server.Info{Mode: "unhealthy after=0s"}, Reason: "unhealthy mode is active"}, "health:      unhealthy (unhealthy mode is active)\n"},
 		{server.State{Info: server.Info{Mode: "unhealthy after=1m0s"}, Healthy: true}, "health:      healthy\n"},
 		{server.State{Info: server.Info{Mode: "hang"}, Healthy: true}, "health:      hanging"},
+		{server.State{Info: server.Info{Mode: "closed after=0s"}, Reason: "closed mode is active"}, "health:      unhealthy (closed mode is active)\n"},
 		{server.State{Info: server.Info{Mode: "hang sticky=true", Sticky: true}, Healthy: true}, "health:      hanging"},
 	} {
 		var out bytes.Buffer
@@ -501,6 +502,187 @@ func TestPrintState(t *testing.T) {
 		if !strings.Contains(out.String(), "mode:        "+tc.st.Mode+"\n") || !strings.Contains(out.String(), tc.want) {
 			t.Errorf("printState(%q) lacks %q:\n%s", tc.st.Mode, tc.want, out.String())
 		}
+	}
+}
+
+// freeAddr returns a loopback address that was free a moment ago, so a test
+// can watch the same address across a close and a re-bind.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().String()
+}
+
+// startData runs superviseData on addr and reports a fatal bind error on the
+// returned channel.
+func startData(t *testing.T, mc *mode.Machine, addr string, delay time.Duration) <-chan error {
+	t.Helper()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := server.New(mc, mode.Store{Dir: t.TempDir()}, log, "test")
+	fatal := make(chan error, 1)
+	go superviseData(log, mc, addr, delay, srv.DataHandler(), func(err error) { fatal <- err })
+	return fatal
+}
+
+// healthz returns the status of GET /healthz on addr, or the dial error.
+func healthz(addr string) (int, error) {
+	c := http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := c.Get("http://" + addr + "/healthz")
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// waitRefused and waitOK poll, because the supervisor reacts to a mode
+// change asynchronously.
+func waitRefused(t *testing.T, addr string) {
+	t.Helper()
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err = healthz(addr); errors.Is(err, syscall.ECONNREFUSED) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("data port %s never refused connections; last result: %v", addr, err)
+}
+
+func waitOK(t *testing.T, addr string) {
+	t.Helper()
+	var code int
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if code, err = healthz(addr); err == nil && code == 200 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("data port %s never answered 200; last result: %d, %v", addr, code, err)
+}
+
+func TestDataListenerClosedModeReleasesAndRebindsPort(t *testing.T) {
+	mc := mode.NewMachine(mode.Hooks{})
+	addr := freeAddr(t)
+	startData(t, mc, addr, 0)
+	waitOK(t, addr)
+
+	// A connection that is open when the mode changes must be dropped.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if err := mc.Set(mode.Mode{Name: mode.Closed}, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitRefused(t, addr)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("open connection after closed: Read error = %v, want it to be closed", err)
+	}
+
+	if err := mc.Set(mode.Mode{Name: mode.Healthy}, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitOK(t, addr)
+
+	// And again: the port can be closed and re-bound repeatedly.
+	if err := mc.Set(mode.Mode{Name: mode.Closed}, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitRefused(t, addr)
+}
+
+func TestDataListenerClosedAfterKeepsServingUntilDue(t *testing.T) {
+	mc := mode.NewMachine(mode.Hooks{})
+	addr := freeAddr(t)
+	startData(t, mc, addr, 0)
+	waitOK(t, addr)
+
+	if err := mc.Set(mode.Mode{Name: mode.Closed, After: 400 * time.Millisecond}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := healthz(addr); err != nil || code != 200 {
+		t.Fatalf("before after elapsed: %d, %v; want 200", code, err)
+	}
+	waitRefused(t, addr)
+}
+
+func TestDataListenerStartDelayIsNotShortenedByModeChanges(t *testing.T) {
+	const delay = 600 * time.Millisecond
+	mc := mode.NewMachine(mode.Hooks{})
+	addr := freeAddr(t)
+	start := time.Now()
+	startData(t, mc, addr, delay)
+
+	// Switching to closed and back during the delay must not bind early.
+	for _, name := range []string{mode.Closed, mode.Healthy} {
+		if err := mc.Set(mode.Mode{Name: name}, 0); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		if _, err := healthz(addr); !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Fatalf("data port reachable %v into a %v start delay (mode %s): %v", time.Since(start), delay, name, err)
+		}
+	}
+	waitOK(t, addr)
+	if got := time.Since(start); got < delay {
+		t.Fatalf("data port bound after %v, before the %v start delay ended", got, delay)
+	}
+}
+
+func TestDataListenerBootInClosedBindsOnlyWhenModeLeavesClosed(t *testing.T) {
+	mc := mode.NewMachine(mode.Hooks{})
+	if err := mc.Set(mode.Mode{Name: mode.Closed}, 0); err != nil {
+		t.Fatal(err)
+	}
+	addr := freeAddr(t)
+	startData(t, mc, addr, 100*time.Millisecond)
+
+	time.Sleep(400 * time.Millisecond) // well past the start delay
+	if _, err := healthz(addr); !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("booted in closed, but the data port is reachable: %v", err)
+	}
+	if err := mc.Set(mode.Mode{Name: mode.Healthy}, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitOK(t, addr)
+}
+
+func TestDataListenerRebindFailureIsFatal(t *testing.T) {
+	mc := mode.NewMachine(mode.Hooks{})
+	addr := freeAddr(t)
+	fatal := startData(t, mc, addr, 0)
+	waitOK(t, addr)
+
+	if err := mc.Set(mode.Mode{Name: mode.Closed}, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitRefused(t, addr)
+	thief, err := net.Listen("tcp", addr) // something else takes the port
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer thief.Close()
+	if err := mc.Set(mode.Mode{Name: mode.Healthy}, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-fatal:
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatalf("fatal error = %v, want EADDRINUSE", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a failed re-bind was not reported as fatal")
 	}
 }
 

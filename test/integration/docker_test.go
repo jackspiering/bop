@@ -716,6 +716,52 @@ func TestHang(t *testing.T) {
 	waitHealth(t, c, "healthy", 30*time.Second)
 }
 
+// TestClosed: the process stays up and the control listener works while the
+// data port refuses connections; leaving closed binds the port again.
+func TestClosed(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+
+	mustExec(t, c, "bop", "closed")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if inspect(t, c, "{{.State.Running}}") != "true" {
+		t.Fatal("container must keep running while closed")
+	}
+	if code, out := execCode(t, c, "bop", "healthcheck"); code != 1 || !strings.Contains(out, "connection refused") {
+		t.Fatalf("healthcheck while closed = %d, want 1 with connection refused:\n%s", code, out)
+	}
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        closed after=0s") || !strings.Contains(out, "health:      unhealthy (closed mode is active)") {
+		t.Fatalf("status:\n%s", out)
+	}
+
+	mustExec(t, c, "bop", "healthy")
+	waitHealth(t, c, "healthy", 30*time.Second)
+	if code, out := execCode(t, c, "bop", "healthcheck"); code != 0 {
+		t.Fatalf("healthcheck after healthy = %d:\n%s", code, out)
+	}
+}
+
+func TestClosedStickySurvivesRestart(t *testing.T) {
+	t.Parallel()
+	c := run(t, cat(fastHealth, []string{image})...)
+	waitHealth(t, c, "healthy", 30*time.Second)
+	mustExec(t, c, "bop", "closed", "sticky=true")
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+
+	mustDocker(t, "restart", "-t", "5", c)
+	waitHealth(t, c, "unhealthy", 30*time.Second)
+	if out := mustExec(t, c, "bop", "status"); !strings.Contains(out, "mode:        closed after=0s sticky=true") {
+		t.Fatalf("status after restart:\n%s", out)
+	}
+	if code, out := execCode(t, c, "bop", "healthcheck"); code != 1 || !strings.Contains(out, "connection refused") {
+		t.Fatalf("healthcheck after restart = %d, want 1 with connection refused:\n%s", code, out)
+	}
+
+	mustExec(t, c, "bop", "clear")
+	waitHealth(t, c, "healthy", 30*time.Second)
+}
+
 func TestStartDelay(t *testing.T) {
 	t.Parallel()
 	const delay = 8 * time.Second

@@ -187,6 +187,19 @@ var exampleChecks = map[string]func(t *testing.T){
 		mustExec(t, c, "bop", "healthy")
 		waitHealth(t, c, "healthy", 30*time.Second)
 	},
+	"closed": func(t *testing.T) {
+		c := upExample(t, "closed", "bop").container("bop")
+		// Unhealthy once the image's start period (10s) has passed.
+		waitHealth(t, c, "unhealthy", 60*time.Second)
+		if inspect(t, c, "{{.State.Running}}") != "true" {
+			t.Fatal("closed container must keep running")
+		}
+		if code, out := execCode(t, c, "bop", "healthcheck"); code != 1 || !strings.Contains(out, "connection refused") {
+			t.Fatalf("healthcheck while closed = %d, want 1 with connection refused:\n%s", code, out)
+		}
+		mustExec(t, c, "bop", "healthy")
+		waitHealth(t, c, "healthy", 30*time.Second)
+	},
 	"start-delay": func(t *testing.T) {
 		c := upExample(t, "start-delay", "bop").container("bop")
 		waitHealth(t, c, "starting", 10*time.Second)

@@ -42,6 +42,7 @@ Modes:
   crash-loop  [interval=<dur>] [exit=<code>]    boot mode or sticky=true only
   oom         [rate=<MiB/s>]                    needs a memory limit
   hang
+  closed      [after=<dur>]                     closes the data port, the process stays up
 Every mode accepts sticky=true: it lasts as long as BOP_STATE_DIR (by default
 the writable layer: survives docker restart, not a recreate).
 
@@ -143,7 +144,8 @@ func execCommand(stdout, stderr io.Writer, getenv func(string) string, spec stri
 
 func printState(w io.Writer, st server.State) {
 	// The machine counts hang as healthy because guard does the blocking, but
-	// the container is not: /healthz never answers.
+	// the container is not: no request on the data port is ever answered.
+	// closed needs no case here: the server reports it unhealthy.
 	health := "healthy"
 	switch {
 	case modeName(st.Mode) == mode.Hang:

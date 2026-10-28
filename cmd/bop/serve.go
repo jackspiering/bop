@@ -197,17 +197,83 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		return reportBootError(stderr, oomRefusal(err))
 	}
 
-	go func() {
-		time.Sleep(cfg.startDelay)
-		ln, err := net.Listen("tcp", cfg.addr)
-		if err != nil {
-			log.Error("data listener", "err", err)
-			os.Exit(1)
-		}
-		serveHTTP(log, "data", ln, srv.DataHandler())
-	}()
+	go superviseData(log, machine, cfg.addr, cfg.startDelay, srv.DataHandler(), func(err error) {
+		log.Error("data listener", "err", err)
+		os.Exit(1)
+	})
 
 	return handleSignals(log, cfg.sigterm, sigs)
+}
+
+// superviseData keeps the data listener bound on addr and serving h, except
+// while the machine is in closed mode (after its `after` has elapsed): then
+// the listener is closed so the port refuses connections while the process
+// stays up, and it is bound again when the mode leaves closed.
+//
+// It waits startDelay first and never binds earlier, whatever the mode does
+// meanwhile. After that it is a level-triggered loop: Watch returns the mode
+// and the "next change" channel under one lock, so a change after that read
+// closes the channel and the loop runs again; none is lost, and no extra
+// locking against the machine is needed. Rapid changes may be coalesced to the
+// latest mode, which is what the port should reflect.
+//
+// A failed bind, at boot or on a re-bind, calls fatal (production logs and
+// exits 1, like the boot-time bind failure): there is no retry, because a
+// port that someone else took cannot be told apart from a misconfiguration.
+func superviseData(log *slog.Logger, m *mode.Machine, addr string, startDelay time.Duration, h http.Handler, fatal func(error)) {
+	time.Sleep(startDelay)
+
+	var srv *http.Server // non-nil while the data port is bound
+	closeData := func() {
+		if srv != nil {
+			// Close, not Shutdown: open connections drop with the listener.
+			srv.Close()
+			srv = nil
+			log.Info("closed", "listener", "data", "addr", addr)
+		}
+	}
+	for {
+		name, changed := m.Watch()
+		var due *time.Timer // when closed mode with after=<dur> takes effect
+		if name == mode.Closed {
+			snap := m.Snapshot()
+			if snap.Mode.Name != mode.Closed {
+				continue // changed since Watch; the channel is already closed
+			}
+			wait := snap.Mode.After - time.Since(snap.SetAt)
+			if wait <= 0 {
+				closeData()
+				<-changed
+				continue
+			}
+			due = time.NewTimer(wait)
+		}
+		if srv == nil {
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				fatal(err)
+				return
+			}
+			srv = &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}
+			log.Info("listening", "listener", "data", "addr", ln.Addr().String())
+			go func(s *http.Server) {
+				if err := s.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					fatal(err)
+				}
+			}(srv)
+		}
+		if due == nil {
+			<-changed
+			continue
+		}
+		select {
+		case <-changed:
+			due.Stop()
+		case <-due.C:
+			closeData()
+			<-changed
+		}
+	}
 }
 
 // reportBootError reports a usage mistake with the usage text. Any other boot
