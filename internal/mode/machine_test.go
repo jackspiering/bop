@@ -43,7 +43,7 @@ func TestMachineHealth(t *testing.T) {
 		{"unhealthy immediately", Mode{Name: Unhealthy}, 0, false},
 		{"unhealthy before after", Mode{Name: Unhealthy, After: 3 * time.Second}, 2 * time.Second, true},
 		{"unhealthy at after", Mode{Name: Unhealthy, After: 3 * time.Second}, 3 * time.Second, false},
-		{"hang is not unhealthy by itself", Mode{Name: Hang}, time.Hour, true},
+		{"hang is unhealthy at once", Mode{Name: Hang}, 0, false},
 		{"healthy", Mode{Name: Healthy}, time.Hour, true},
 	}
 	for _, tt := range tests {

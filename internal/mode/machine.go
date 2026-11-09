@@ -154,7 +154,9 @@ func (mc *Machine) Snapshot() Snapshot {
 // snapshotLocked must be called with mu held.
 func (mc *Machine) snapshotLocked() Snapshot {
 	s := Snapshot{Mode: mc.cur, SetAt: mc.setAt, Healthy: true}
-	if (mc.cur.Name == Unhealthy || mc.cur.Name == Closed) && mc.now().Sub(mc.setAt) >= mc.cur.After {
+	// hang is unhealthy from the moment it is set: no request on the data port
+	// is answered (Server.guard does the blocking).
+	if mc.cur.Name == Hang || ((mc.cur.Name == Unhealthy || mc.cur.Name == Closed) && mc.now().Sub(mc.setAt) >= mc.cur.After) {
 		s.Healthy = false
 		s.Reason = mc.cur.Name + " mode is active"
 	}

@@ -171,6 +171,17 @@ func TestUnhealthyAfter(t *testing.T) {
 	}
 }
 
+func TestStatusReportsHangAsUnhealthy(t *testing.T) {
+	h := newHarness(t, mode.Hooks{})
+	st, err := h.client.Set(context.Background(), "hang")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Healthy || st.Reason != "hang mode is active" {
+		t.Fatalf("hang: healthy=%v reason=%q, want healthy=false and reason %q", st.Healthy, st.Reason, "hang mode is active")
+	}
+}
+
 func TestHangBlocksDataButNotControl(t *testing.T) {
 	h := newHarness(t, mode.Hooks{})
 	if _, err := h.client.Set(context.Background(), "hang"); err != nil {
