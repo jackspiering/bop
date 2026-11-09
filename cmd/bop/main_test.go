@@ -493,9 +493,9 @@ func TestPrintState(t *testing.T) {
 		{server.State{Info: server.Info{Mode: "healthy"}, Healthy: true}, "health:      healthy\n"},
 		{server.State{Info: server.Info{Mode: "unhealthy after=0s"}, Reason: "unhealthy mode is active"}, "health:      unhealthy (unhealthy mode is active)\n"},
 		{server.State{Info: server.Info{Mode: "unhealthy after=1m0s"}, Healthy: true}, "health:      healthy\n"},
-		{server.State{Info: server.Info{Mode: "hang"}, Healthy: true}, "health:      hanging"},
+		{server.State{Info: server.Info{Mode: "hang"}, Reason: "hang mode is active"}, "health:      hanging"},
 		{server.State{Info: server.Info{Mode: "closed after=0s"}, Reason: "closed mode is active"}, "health:      unhealthy (closed mode is active)\n"},
-		{server.State{Info: server.Info{Mode: "hang sticky=true", Sticky: true}, Healthy: true}, "health:      hanging"},
+		{server.State{Info: server.Info{Mode: "hang sticky=true", Sticky: true}, Reason: "hang mode is active"}, "health:      hanging"},
 	} {
 		var out bytes.Buffer
 		printState(&out, tc.st)
