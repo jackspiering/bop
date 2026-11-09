@@ -154,7 +154,7 @@ func (m *Mode) set(k, v string) error {
 	case "rate":
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > 1<<20 {
-			return usagef("invalid rate=%q: must be a positive integer (MiB/s)", v)
+			return usagef("invalid rate=%q: must be an integer from 1 to 1048576 (MiB/s)", v)
 		}
 		m.Rate = n
 	}
